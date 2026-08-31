@@ -19,8 +19,8 @@ class OpenCodeProvider(LLMProvider):
     Requer que 'opencode serve' esteja rodando e a variavel de ambiente
     OPENCODE_SERVER_PASSWORD esteja configurada.
 
-    Usa o campo system separado do campo parts (mensagem do usuario).
-    Envia agent restrito para Analysis de texto apenas.
+    Valida que o agente configurado existe no servidor via GET /agent
+    antes do primeiro chat.
 
     Args:
         base_url: URL base do servidor OpenCode.
@@ -28,6 +28,7 @@ class OpenCodeProvider(LLMProvider):
         password: Senha para autenticacao HTTP basic.
         timeout: Timeout em segundos para chamadas HTTP.
         agent: ID do agente a ser usado (default: account-intelligence).
+        validate_agent: Se True, valida que o agente existe no servidor.
     """
 
     def __init__(
@@ -37,6 +38,7 @@ class OpenCodeProvider(LLMProvider):
         password: str | None = None,
         timeout: int = 120,
         agent: str = DEFAULT_AGENT,
+        validate_agent: bool = True,
     ):
         self._base_url = base_url or "http://127.0.0.1:4096"
         self._username = username or os.environ.get("OPENCODE_SERVER_USERNAME", "opencode")
@@ -44,6 +46,7 @@ class OpenCodeProvider(LLMProvider):
         self._timeout = timeout
         self._session_id: str | None = None
         self._agent = agent
+        self._agent_validated = False
 
         if not self._password:
             raise ValueError(
@@ -51,6 +54,9 @@ class OpenCodeProvider(LLMProvider):
                 "Defina a variavel de ambiente OPENCODE_SERVER_PASSWORD "
                 "ou passe password no construtor."
             )
+
+        if validate_agent:
+            self._validate_agent_exists()
 
     def _auth_header(self) -> str:
         """Gera header de autenticacao HTTP basic."""
@@ -91,6 +97,39 @@ class OpenCodeProvider(LLMProvider):
                 f"OpenCode indisponivel em {self._base_url}: {e}"
             ) from e
 
+    def _validate_agent_exists(self) -> None:
+        """Valida que o agente configurado existe no servidor GET /agent."""
+        if self._agent_validated:
+            return
+
+        try:
+            result = self._request("GET", "/agent")
+        except RuntimeError:
+            raise RuntimeError(
+                f"Agente '{self._agent}' nao encontrado no OpenCode. "
+                f"Inicie o servidor a partir do projeto onde "
+                f".opencode/agents/{self._agent}.md esta disponivel."
+            )
+
+        agents_list = result if isinstance(result, list) else result.get("agents", [])
+
+        agent_ids = []
+        for a in agents_list:
+            if isinstance(a, dict):
+                agent_ids.append(a.get("id", a.get("name", "")))
+            elif isinstance(a, str):
+                agent_ids.append(a)
+
+        if self._agent not in agent_ids:
+            raise RuntimeError(
+                f"Agente '{self._agent}' nao encontrado no OpenCode. "
+                f"Agentes disponiveis: {agent_ids}. "
+                f"Inicie o servidor a partir do projeto onde "
+                f".opencode/agents/{self._agent}.md esta disponivel."
+            )
+
+        self._agent_validated = True
+
     def health_check(self) -> bool:
         """Verifica se o servidor OpenCode esta respondendo."""
         try:
@@ -114,9 +153,13 @@ class OpenCodeProvider(LLMProvider):
     ) -> LLMResponse:
         """Envia um prompt ao OpenCode e retorna a resposta estruturada.
 
+        Valida o agente antes do primeiro chat.
         Usa o campo 'system' separadamente (nao concatena com prompt).
         Envia o agente restrito via campo 'agent'.
         """
+        if not self._agent_validated:
+            self._validate_agent_exists()
+
         session_id = self._ensure_session()
 
         message_data: dict = {

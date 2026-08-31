@@ -38,7 +38,6 @@ def run_agent(
     max_loops: int | None = None,
     provider_name: str | None = None,
     llm_name: str | None = None,
-    require_llm: bool = False,
 ) -> str:
     """Executa o agente para uma empresa-alvo e retorna o briefing."""
     config = get_config()
@@ -48,15 +47,22 @@ def run_agent(
     provider = _get_provider(search_name)
 
     llm = None
-    if llm_name:
+    if llm_name == "none":
+        llm = None
+    elif llm_name == "opencode":
+        llm = _get_llm("opencode")
+    elif llm_name:
         llm = _get_llm(llm_name)
-    elif search_name != "mock":
+    elif search_name == "exa":
         try:
             llm = _get_llm("opencode")
-        except ValueError:
-            llm = None
+        except (ValueError, RuntimeError) as e:
+            raise RuntimeError(
+                f"provider=exa requer LLM configurado. "
+                f"Nenhum --llm informado e OpenCode nao esta disponivel: {e}"
+            ) from e
 
-    graph = build_graph(provider=provider, llm=llm, require_llm=require_llm)
+    graph = build_graph(provider=provider, llm=llm)
 
     initial_state = AccountIntelligenceState(
         target_company=target_company,
@@ -97,14 +103,9 @@ def main():
     parser.add_argument(
         "--llm",
         type=str,
-        choices=["opencode", "mock", "none"],
+        choices=["opencode", "none"],
         default=None,
-        help="Provedor de LLM (padrao: opencode se OPENCODE_SERVER_PASSWORD configurada)",
-    )
-    parser.add_argument(
-        "--require-llm",
-        action="store_true",
-        help="Falha se LLM nao estiver disponivel (execucao comercial)",
+        help="Provedor de LLM (padrao: opencode; 'none' somente para diagnostico)",
     )
     args = parser.parse_args()
 
@@ -113,13 +114,7 @@ def main():
     print(f"  Empresa-alvo: {args.company}")
     print(f"{'='*60}\n")
 
-    briefing = run_agent(
-        args.company,
-        args.max_loops,
-        args.provider,
-        args.llm,
-        args.require_llm,
-    )
+    briefing = run_agent(args.company, args.max_loops, args.provider, args.llm)
     print(briefing)
 
 

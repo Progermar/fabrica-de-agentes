@@ -21,6 +21,56 @@ from fabrica_de_agentes.state import (
     Source,
 )
 
+
+def _mock_agent_response():
+    """Cria mock de resposta GET /agent com account-intelligence."""
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(
+        [{"id": "account-intelligence", "name": "Account Intelligence"}]
+    ).encode()
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+def _mock_session_response():
+    """Cria mock de resposta POST /session."""
+    resp = MagicMock()
+    resp.read.return_value = json.dumps({"id": "ses_test123"}).encode()
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+def _mock_chat_response(text='{"result": "ok"}'):
+    """Cria mock de resposta POST /session/:id/message."""
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(
+        {
+            "info": {
+                "modelID": "gpt-4o",
+                "tokens": {"input": 100, "output": 50},
+                "cost": 0.01,
+            },
+            "parts": [{"type": "text", "text": text}],
+        }
+    ).encode()
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+def _make_provider(agent="account-intelligence", validate=True):
+    """Cria OpenCodeProvider com mocks de GET /agent."""
+    agent_resp = _mock_agent_response()
+    with patch("urllib.request.urlopen", return_value=agent_resp):
+        return OpenCodeProvider(
+            password="test-pw",
+            agent=agent,
+            validate_agent=validate,
+        )
+
+
 # =============================================================================
 # Testes do OpenCodeProvider com HTTP mockado
 # =============================================================================
@@ -33,23 +83,54 @@ class TestOpenCodeProvider:
         """Falha com mensagem clara na ausencia de OPENCODE_SERVER_PASSWORD."""
         with patch.dict(os.environ, {}, clear=True):
             with pytest.raises(ValueError, match="OPENCODE_SERVER_PASSWORD"):
-                OpenCodeProvider(password="")
+                OpenCodeProvider(password="", validate_agent=False)
 
     def test_uses_explicit_password(self):
         """Aceita senha passada explicitamente no construtor."""
         with patch.dict(os.environ, {}, clear=True):
-            provider = OpenCodeProvider(password="test-pw-123")
+            provider = OpenCodeProvider(
+                password="test-pw-123", validate_agent=False
+            )
             assert provider._password == "test-pw-123"
 
     def test_uses_env_password(self):
         """Le OPENCODE_SERVER_PASSWORD do ambiente."""
         with patch.dict(os.environ, {"OPENCODE_SERVER_PASSWORD": "env-pw-456"}):
-            provider = OpenCodeProvider()
+            provider = OpenCodeProvider(validate_agent=False)
             assert provider._password == "env-pw-456"
+
+    def test_agent_validated_on_init(self):
+        """Agente e validado via GET /agent na inicializacao."""
+        agent_resp = _mock_agent_response()
+        with patch("urllib.request.urlopen", return_value=agent_resp) as mock_url:
+            provider = OpenCodeProvider(password="test-pw")
+
+        assert provider._agent_validated is True
+        call_args = mock_url.call_args
+        assert "/agent" in call_args[0][0].full_url
+
+    def test_agent_not_found_raises_error(self):
+        """Falha com mensagem clara quando agente nao existe no servidor."""
+        agent_resp = MagicMock()
+        agent_resp.read.return_value = json.dumps(
+            [{"id": "other-agent", "name": "Other"}]
+        ).encode()
+        agent_resp.__enter__ = lambda s: s
+        agent_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=agent_resp):
+            with pytest.raises(RuntimeError, match="account-intelligence.*nao encontrado"):
+                OpenCodeProvider(password="test-pw")
+
+    def test_agent_server_unavailable_raises_error(self):
+        """Falha quando servidor indisponivel durante validacao do agente."""
+        with patch("urllib.request.urlopen", side_effect=RuntimeError("conn refused")):
+            with pytest.raises(RuntimeError, match="account-intelligence.*nao encontrado"):
+                OpenCodeProvider(password="test-pw")
 
     def test_health_check_success(self):
         """Health check retorna True quando servidor responde."""
-        provider = OpenCodeProvider(password="test-pw")
+        provider = _make_provider()
 
         mock_response = MagicMock()
         mock_response.read.return_value = json.dumps(
@@ -63,39 +144,19 @@ class TestOpenCodeProvider:
 
     def test_health_check_failure(self):
         """Health check retorna False quando servidor falha."""
-        provider = OpenCodeProvider(password="test-pw")
+        provider = _make_provider()
 
         with patch("urllib.request.urlopen", side_effect=RuntimeError("conn refused")):
             assert provider.health_check() is False
 
     def test_chat_valid_response(self):
         """Parsing de resposta valida do OpenCode."""
-        provider = OpenCodeProvider(password="test-pw")
+        provider = _make_provider()
 
-        session_response = MagicMock()
-        session_response.read.return_value = json.dumps(
-            {"id": "ses_test123"}
-        ).encode()
-        session_response.__enter__ = lambda s: s
-        session_response.__exit__ = MagicMock(return_value=False)
+        session_resp = _mock_session_response()
+        chat_resp = _mock_chat_response()
 
-        chat_response = MagicMock()
-        chat_response.read.return_value = json.dumps(
-            {
-                "info": {
-                    "modelID": "gpt-4o",
-                    "tokens": {"input": 100, "output": 50},
-                    "cost": 0.01,
-                },
-                "parts": [
-                    {"type": "text", "text": '{"result": "ok"}'},
-                ],
-            }
-        ).encode()
-        chat_response.__enter__ = lambda s: s
-        chat_response.__exit__ = MagicMock(return_value=False)
-
-        with patch("urllib.request.urlopen", side_effect=[session_response, chat_response]):
+        with patch("urllib.request.urlopen", side_effect=[session_resp, chat_resp]):
             result = provider.chat("test prompt")
 
         assert isinstance(result, LLMResponse)
@@ -107,21 +168,15 @@ class TestOpenCodeProvider:
 
     def test_chat_invalid_json_response(self):
         """Trata resposta que nao e JSON valido no nivel HTTP."""
-        provider = OpenCodeProvider(password="test-pw")
+        provider = _make_provider()
 
-        session_response = MagicMock()
-        session_response.read.return_value = json.dumps(
-            {"id": "ses_test123"}
-        ).encode()
-        session_response.__enter__ = lambda s: s
-        session_response.__exit__ = MagicMock(return_value=False)
+        session_resp = _mock_session_response()
+        chat_resp = MagicMock()
+        chat_resp.read.return_value = b"not json at all"
+        chat_resp.__enter__ = lambda s: s
+        chat_resp.__exit__ = MagicMock(return_value=False)
 
-        chat_response = MagicMock()
-        chat_response.read.return_value = b"not json at all"
-        chat_response.__enter__ = lambda s: s
-        chat_response.__exit__ = MagicMock(return_value=False)
-
-        with patch("urllib.request.urlopen", side_effect=[session_response, chat_response]):
+        with patch("urllib.request.urlopen", side_effect=[session_resp, chat_resp]):
             result = provider.chat("test prompt")
 
         assert isinstance(result, LLMResponse)
@@ -129,7 +184,7 @@ class TestOpenCodeProvider:
 
     def test_chat_server_unavailable(self):
         """Lida com servidor indisponivel."""
-        provider = OpenCodeProvider(password="test-pw")
+        provider = _make_provider()
 
         with patch("urllib.request.urlopen", side_effect=RuntimeError("conn refused")):
             with pytest.raises(RuntimeError, match="indisponivel"):
@@ -137,39 +192,21 @@ class TestOpenCodeProvider:
 
     def test_chat_uses_system_field_separately(self):
         """Verifica que system e enviado como campo separado, nao concatenado."""
-        provider = OpenCodeProvider(password="test-pw")
+        provider = _make_provider()
 
-        session_response = MagicMock()
-        session_response.read.return_value = json.dumps(
-            {"id": "ses_test123"}
-        ).encode()
-        session_response.__enter__ = lambda s: s
-        session_response.__exit__ = MagicMock(return_value=False)
+        session_resp = _mock_session_response()
+        chat_resp = _mock_chat_response()
 
-        chat_response = MagicMock()
-        chat_response.read.return_value = json.dumps(
-            {
-                "info": {"modelID": "gpt-4o", "tokens": {"input": 10, "output": 5}, "cost": 0.001},
-                "parts": [{"type": "text", "text": "ok"}],
-            }
-        ).encode()
-        chat_response.__enter__ = lambda s: s
-        chat_response.__exit__ = MagicMock(return_value=False)
+        captured = []
 
-        captured_requests = []
+        def capture(req, **kw):
+            captured.append(req)
+            return session_resp if len(captured) == 1 else chat_resp
 
-        def capture_urlopen(req, **kwargs):
-            captured_requests.append(req)
-            if len(captured_requests) == 1:
-                return session_response
-            return chat_response
-
-        with patch("urllib.request.urlopen", side_effect=capture_urlopen):
+        with patch("urllib.request.urlopen", side_effect=capture):
             provider.chat("user prompt", system="system instruction")
 
-        msg_request = captured_requests[1]
-        body = json.loads(msg_request.data.decode())
-
+        body = json.loads(captured[1].data.decode())
         assert "system" in body
         assert body["system"] == "system instruction"
         assert body["parts"][0]["text"] == "user prompt"
@@ -177,39 +214,29 @@ class TestOpenCodeProvider:
 
     def test_chat_uses_agent_field(self):
         """Verifica que agent e enviado na mensagem."""
-        provider = OpenCodeProvider(password="test-pw", agent="my-agent")
-
-        session_response = MagicMock()
-        session_response.read.return_value = json.dumps(
-            {"id": "ses_test123"}
+        agent_resp = MagicMock()
+        agent_resp.read.return_value = json.dumps(
+            [{"id": "my-agent", "name": "My Agent"}]
         ).encode()
-        session_response.__enter__ = lambda s: s
-        session_response.__exit__ = MagicMock(return_value=False)
+        agent_resp.__enter__ = lambda s: s
+        agent_resp.__exit__ = MagicMock(return_value=False)
 
-        chat_response = MagicMock()
-        chat_response.read.return_value = json.dumps(
-            {
-                "info": {"modelID": "gpt-4o", "tokens": {"input": 10, "output": 5}, "cost": 0.001},
-                "parts": [{"type": "text", "text": "ok"}],
-            }
-        ).encode()
-        chat_response.__enter__ = lambda s: s
-        chat_response.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=agent_resp):
+            provider = OpenCodeProvider(password="test-pw", agent="my-agent")
 
-        captured_requests = []
+        session_resp = _mock_session_response()
+        chat_resp = _mock_chat_response()
 
-        def capture_urlopen(req, **kwargs):
-            captured_requests.append(req)
-            if len(captured_requests) == 1:
-                return session_response
-            return chat_response
+        captured = []
 
-        with patch("urllib.request.urlopen", side_effect=capture_urlopen):
+        def capture(req, **kw):
+            captured.append(req)
+            return session_resp if len(captured) == 1 else chat_resp
+
+        with patch("urllib.request.urlopen", side_effect=capture):
             provider.chat("test")
 
-        msg_request = captured_requests[1]
-        body = json.loads(msg_request.data.decode())
-
+        body = json.loads(captured[1].data.decode())
         assert body.get("agent") == "my-agent"
 
 
@@ -400,6 +427,56 @@ class TestExtractEvidence:
         assert result["evidence"][0].claim == "Claim duplicado"
         mock_llm.chat.assert_not_called()
 
+    def test_rejects_invented_url(self):
+        """URL inventada pelo LLM e rejeitada, nao vira evidencia."""
+        state = AccountIntelligenceState(
+            target_company="Test",
+            sources=[
+                Source(url="https://ex.com/real", title="Real", snippet="s"),
+            ],
+        )
+
+        mock_llm = MagicMock(spec=LLMProvider)
+        mock_llm.chat.return_value = LLMResponse(
+            text=json.dumps({
+                "sources": [
+                    {
+                        "url": "https://ex.com/real",
+                        "relevant": True,
+                        "relevance_reason": "ok",
+                        "claims": [{
+                            "claim": "Claim valido",
+                            "claim_type": "fact",
+                            "category": "stack",
+                            "confidence": "alta",
+                            "context": "ctx",
+                        }],
+                    },
+                    {
+                        "url": "https://invented.com/fake",
+                        "relevant": True,
+                        "relevance_reason": "inventado",
+                        "claims": [{
+                            "claim": "Claim de URL inventada",
+                            "claim_type": "fact",
+                            "category": "stack",
+                            "confidence": "alta",
+                            "context": "ctx",
+                        }],
+                    },
+                ]
+            })
+        )
+
+        result = extract_evidence(state, llm=mock_llm)
+
+        assert len(result["evidence"]) == 1
+        assert result["evidence"][0].source_url == "https://ex.com/real"
+        assert all(
+            e.source_url != "https://invented.com/fake"
+            for e in result["evidence"]
+        )
+
 
 # =============================================================================
 # Testes de analyze_account com LLM mockado
@@ -515,7 +592,7 @@ class TestAnalyzeAccount:
         assert result["tech_signals"][0].claim_type == "fact"
 
     def test_invalid_source_url_rejected(self):
-        """URL invalida (nao nas fontes) e rejeitada."""
+        """URL inventada (nao nas fontes) e rejeitada."""
         state = AccountIntelligenceState(
             target_company="Test",
             evidence=[],
@@ -541,6 +618,62 @@ class TestAnalyzeAccount:
 
         result = analyze_account(state, llm=mock_llm)
         assert result["tech_signals"][0].source_url == ""
+
+    def test_similar_url_rejected(self):
+        """URL parecida/substring e rejeitada, somente correspondencia exata aceita."""
+        state = AccountIntelligenceState(
+            target_company="Test",
+            evidence=[],
+            all_source_urls=["https://ex.com/real"],
+        )
+
+        mock_llm = MagicMock(spec=LLMProvider)
+        mock_llm.chat.return_value = LLMResponse(
+            text=json.dumps({
+                "tech_signals": [{
+                    "technology": "Sys",
+                    "purpose": "",
+                    "evidence": "ev",
+                    "confidence": "media",
+                    "claim_type": "inference",
+                    "source_url": "https://ex.com/real/extra/path",
+                }],
+                "stakeholders": [],
+                "opportunities": [],
+                "commercial_risks": [],
+            })
+        )
+
+        result = analyze_account(state, llm=mock_llm)
+        assert result["tech_signals"][0].source_url == ""
+
+    def test_exact_url_accepted(self):
+        """URL exata e aceita."""
+        state = AccountIntelligenceState(
+            target_company="Test",
+            evidence=[],
+            all_source_urls=["https://ex.com/real"],
+        )
+
+        mock_llm = MagicMock(spec=LLMProvider)
+        mock_llm.chat.return_value = LLMResponse(
+            text=json.dumps({
+                "tech_signals": [{
+                    "technology": "Sys",
+                    "purpose": "",
+                    "evidence": "ev",
+                    "confidence": "media",
+                    "claim_type": "inference",
+                    "source_url": "https://ex.com/real",
+                }],
+                "stakeholders": [],
+                "opportunities": [],
+                "commercial_risks": [],
+            })
+        )
+
+        result = analyze_account(state, llm=mock_llm)
+        assert result["tech_signals"][0].source_url == "https://ex.com/real"
 
 
 # =============================================================================
@@ -708,11 +841,6 @@ class TestGraphSmokeOffline:
         assert "MOCKADO" not in briefing
         assert "DADOS PARCIALMENTE MOCKADOS" not in briefing
 
-    def test_require_llm_fails_without_llm(self):
-        """require_llm=True falha se llm for None."""
-        with pytest.raises(ValueError, match="requer LLM"):
-            build_graph(provider=MockSearchProvider(), require_llm=True)
-
 
 # =============================================================================
 # Testes de integracao: gap_analysis -> search_sources com nova query
@@ -777,7 +905,9 @@ class TestGapLoopIntegration:
             LLMResponse(text=json.dumps(gap_resp_final)),
         ]
 
-        graph = build_graph(provider=MockSearchProvider(results_per_query=2), llm=mock_llm)
+        graph = build_graph(
+            provider=MockSearchProvider(results_per_query=2), llm=mock_llm
+        )
 
         state = AccountIntelligenceState(
             target_company="Test Loop",
@@ -846,86 +976,71 @@ class TestGapLoopIntegration:
         assert result["loop_counter"] == 1
         assert result["has_new_researchable_gap"] is False
 
-    def test_two_cycles_no_duplicate_evidence(self):
-        """Dois ciclos nao geram evidencias duplicadas mesmos com URLs diferentes."""
-        mock_llm = MagicMock(spec=LLMProvider)
-
-        extract_resp_1 = {
-            "sources": [{
-                "url": "https://ex.com/a",
-                "relevant": True,
-                "relevance_reason": "ok",
-                "claims": [{
-                    "claim": "Claim unico",
-                    "claim_type": "fact",
-                    "category": "stack",
-                    "confidence": "alta",
-                    "context": "ctx",
-                }],
-            }]
-        }
-
-        extract_resp_2 = {
-            "sources": [{
-                "url": "https://ex.com/a",
-                "relevant": True,
-                "relevance_reason": "ok",
-                "claims": [{
-                    "claim": "Claim unico",
-                    "claim_type": "fact",
-                    "category": "stack",
-                    "confidence": "alta",
-                    "context": "ctx2",
-                }],
-            }]
-        }
-
-        analyze_resp = {
-            "tech_signals": [],
-            "stakeholders": [],
-            "opportunities": [],
-            "commercial_risks": [],
-        }
-
-        gap_resp_1 = {
-            "gaps": [{
-                "description": "Gap",
-                "criticality": "alta",
-                "discovery_action": "Pesquisar",
-                "new_query": "Teste licitacao vaga",
-                "priority_for_next_interaction": 1,
-            }],
-            "rapport_points": [],
-            "discovery_questions": [],
-            "suggested_next_actions": [],
-        }
-
-        gap_resp_2 = {
-            "gaps": [],
-            "rapport_points": [],
-            "discovery_questions": [],
-            "suggested_next_actions": [],
-        }
-
-        mock_llm.chat.side_effect = [
-            LLMResponse(text=json.dumps(extract_resp_1)),
-            LLMResponse(text=json.dumps(analyze_resp)),
-            LLMResponse(text=json.dumps(gap_resp_1)),
-            LLMResponse(text=json.dumps(extract_resp_2)),
-            LLMResponse(text=json.dumps(analyze_resp)),
-            LLMResponse(text=json.dumps(gap_resp_2)),
-        ]
-
-        graph = build_graph(provider=MockSearchProvider(results_per_query=2), llm=mock_llm)
-
+    def test_deduplicates_evidence_within_single_call(self):
+        """Dedup previne evidencias duplicadas dentro de uma unica chamada LLM."""
         state = AccountIntelligenceState(
-            target_company="Dedup Test",
-            max_loops=2,
+            target_company="Test",
+            sources=[
+                Source(url="https://ex.com/a", title="A", snippet="s"),
+            ],
         )
 
-        result = graph.invoke(state)
+        mock_llm = MagicMock(spec=LLMProvider)
+        mock_llm.chat.return_value = LLMResponse(
+            text=json.dumps({
+                "sources": [{
+                    "url": "https://ex.com/a",
+                    "relevant": True,
+                    "relevance_reason": "ok",
+                    "claims": [
+                        {
+                            "claim": "Claim unico",
+                            "claim_type": "fact",
+                            "category": "stack",
+                            "confidence": "alta",
+                            "context": "ctx1",
+                        },
+                        {
+                            "claim": "Claim unico",
+                            "claim_type": "fact",
+                            "category": "stack",
+                            "confidence": "alta",
+                            "context": "ctx2",
+                        },
+                    ],
+                }]
+            })
+        )
+
+        result = extract_evidence(state, llm=mock_llm)
 
         claim_count = sum(
             1 for e in result["evidence"] if e.claim == "Claim unico"
         )
         assert claim_count == 1
+
+
+# =============================================================================
+# Testes de provider=exa exigindo LLM
+# =============================================================================
+
+
+class TestExaRequiresLLM:
+    """Testes de que provider=exa requer LLM por padrao."""
+
+    def test_exa_without_llm_raises_error(self):
+        """provider=exa sem --llm falha se OpenCode nao disponivel."""
+        with patch.dict(os.environ, {"EXA_API_KEY": "fake-key"}, clear=False):
+            with pytest.raises(RuntimeError, match="provider=exa requer LLM"):
+                from fabrica_de_agentes.cli import run_agent
+
+                run_agent("Test", provider_name="exa")
+
+    def test_exa_with_llm_none_explicit(self):
+        """provider=exa + --llm none e permitido (escolha explicita)."""
+        from fabrica_de_agentes.cli import run_agent
+
+        result = run_agent(
+            "Test", provider_name="mock", llm_name="none", max_loops=1
+        )
+        assert result

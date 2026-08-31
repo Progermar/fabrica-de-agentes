@@ -103,14 +103,11 @@ Retorne APENAS JSON valido no formato:
 
 
 def _validate_source_url(url: str, valid_urls: set[str]) -> str:
-    """Valida se a URL existe nas fontes conhecidas. Retorna vazio se invalida."""
+    """Valida se a URL e correspondencia exata nas fontes conhecidas."""
     if not url:
         return ""
     if url in valid_urls:
         return url
-    for valid in valid_urls:
-        if url in valid or valid in url:
-            return valid
     return ""
 
 

@@ -114,12 +114,16 @@ Retorne APENAS JSON valido conforme instrucoes do system prompt."""
 
     new_evidence: list[Evidence] = []
     newly_analyzed: list[str] = list(state.analyzed_source_urls)
+    sent_urls = {s.url for s in new_sources}
 
     sources_data = data.get("sources", [])
     for src_data in sources_data:
         url = src_data.get("url", "")
         relevant = src_data.get("relevant", False)
         reason = src_data.get("relevance_reason", "")
+
+        if url not in sent_urls:
+            continue
 
         for src in state.sources:
             if src.url == url:
