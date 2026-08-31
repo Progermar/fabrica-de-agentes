@@ -154,6 +154,9 @@ class TestSearchResultNormalization:
         assert source.title == "Test Title"
         assert source.snippet == "Test snippet text"
         assert source.content == "Test snippet text"
+        assert source.published_date == "2025-01-01"
+        assert source.score == 0.8
+        assert source.highlights == ["highlight1"]
 
     def test_search_result_to_source_minimal(self):
         """Verifica conversao com dados minimos."""
@@ -165,6 +168,9 @@ class TestSearchResultNormalization:
         assert source.title == "Min"
         assert source.snippet == ""
         assert source.content == ""
+        assert source.published_date is None
+        assert source.score is None
+        assert source.highlights == []
 
 
 # =============================================================================
@@ -345,8 +351,8 @@ class TestSearchSourcesNode:
         assert result["sources"] == []
         assert result["loop_counter"] == 1
 
-    def test_search_sources_handles_provider_error(self):
-        """Lida com erros do provider sem interromper fluxo."""
+    def test_search_sources_propagates_provider_error(self):
+        """Erros do provider sao propagados com contexto (nao engolidos)."""
         failing_provider = MagicMock(spec=SearchProvider)
         failing_provider.search.side_effect = Exception("API error")
 
@@ -355,11 +361,8 @@ class TestSearchSourcesNode:
             research_queries=["query1"],
         )
 
-        result = search_sources(state, provider=failing_provider)
-
-        # Deve retornar vazio sem levantar excecao
-        assert result["sources"] == []
-        assert result["loop_counter"] == 1
+        with pytest.raises(Exception, match="API error"):
+            search_sources(state, provider=failing_provider)
 
 
 # =============================================================================

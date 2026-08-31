@@ -24,6 +24,9 @@ def _search_result_to_source(result: SearchResult) -> Source:
         title=result.title,
         snippet=result.snippet,
         content=result.snippet,
+        published_date=result.published_date,
+        score=result.score,
+        highlights=list(result.highlights),
     )
 
 
@@ -37,6 +40,9 @@ def search_sources(
     desacoplamento do LangGraph da implementacao de busca.
     Quando None, usa MockSearchProvider para manter compatibilidade
     com testes offline existentes.
+
+    Raises:
+        SearchProviderError: Se a busca falhar, com contexto da query e provedor.
     """
     if provider is None:
         from fabrica_de_agentes.search.mock_provider import MockSearchProvider
@@ -45,29 +51,26 @@ def search_sources(
 
     queries = state.research_queries
     loop = state.loop_counter
-    max_results = state.max_results_per_query if hasattr(state, "max_results_per_query") else 5
+    max_results = state.max_results_per_query
+    max_queries = state.max_queries_per_cycle
 
     new_sources: list[Source] = []
     new_urls: list[str] = []
     total_requests = 0
     total_cost = 0.0
 
-    for query in queries[:3]:
-        try:
-            response = provider.search(
-                query=query,
-                num_results=max_results,
-            )
-            for result in response.results:
-                source = _search_result_to_source(result)
-                new_sources.append(source)
-                new_urls.append(source.url)
-            total_requests += response.request_count
-            if response.cost_dollars is not None:
-                total_cost += response.cost_dollars
-        except Exception:
-            # Em caso de erro na busca, registra mas nao interrompe o fluxo
-            continue
+    for query in queries[:max_queries]:
+        response = provider.search(
+            query=query,
+            num_results=max_results,
+        )
+        for result in response.results:
+            source = _search_result_to_source(result)
+            new_sources.append(source)
+            new_urls.append(source.url)
+        total_requests += response.request_count
+        if response.cost_dollars is not None:
+            total_cost += response.cost_dollars
 
     # Acumula com fontes existentes e deduplica
     all_sources = _deduplicate_urls(list(state.sources) + new_sources)

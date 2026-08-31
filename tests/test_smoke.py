@@ -57,6 +57,8 @@ def test_state_initialization():
     assert state.target_company == "Test Corp"
     assert state.loop_counter == 0
     assert state.max_loops == 2
+    assert state.max_results_per_query == 5
+    assert state.max_queries_per_cycle == 3
     assert len(state.sources) == 0
     assert len(state.evidence) == 0
     assert len(state.stakeholders) == 0
@@ -79,12 +81,13 @@ def test_briefing_structure():
 
     expected_sections = [
         "PERFIL DA CONTA",
-        "STAKEHOLDER INTELLIGENCE",
-        "TECHNOLOGY / STACK DISCOVERY",
-        "OPPORTUNITY DISCOVERY",
-        "RAPPORT E ESTRATEGIA COMERCIAL",
-        "GAP ANALYSIS",
-        "RASTREABILIDADE",
+        "STAKEHOLDER INTELLIGENCE (MOCKADO)",
+        "TECHNOLOGY / STACK DISCOVERY (MOCKADO)",
+        "OPPORTUNITY DISCOVERY (MOCKADO)",
+        "RAPPORT E ESTRATEGIA COMERCIAL (MOCKADO)",
+        "GAP ANALYSIS (MOCKADO)",
+        "FONTES E RASTREABILIDADE (DADOS REAIS - EXA)",
+        "AVISO: DADOS PARCIALMENTE MOCKADOS",
     ]
 
     for section in expected_sections:
@@ -122,3 +125,38 @@ def test_briefing_shows_search_metrics():
     briefing = result["briefing_final"]
 
     assert "Requisicoes de busca realizadas" in briefing
+
+
+def test_briefing_disclaimer_mock_data():
+    """Verifica que o briefing contem aviso explicito sobre dados mockados."""
+    graph = build_graph(provider=MockSearchProvider())
+
+    initial_state = AccountIntelligenceState(
+        target_company="Disclaimer Test",
+        max_loops=1,
+    )
+
+    result = graph.invoke(initial_state)
+    briefing = result["briefing_final"]
+
+    assert "AVISO: DADOS PARCIALMENTE MOCKADOS" in briefing
+    assert "somente a secao de fontes/busca (exa) contem dados reais" in briefing.lower()
+
+
+def test_configurable_limits_respected():
+    """Verifica que max_queries_per_cycle e max_results_per_query sao respeitados."""
+    from fabrica_de_agentes.nodes.search_sources import search_sources
+
+    provider = MockSearchProvider(results_per_query=2)
+    state = AccountIntelligenceState(
+        target_company="Limits Test",
+        research_queries=["q1", "q2", "q3", "q4", "q5"],
+        max_results_per_query=2,
+        max_queries_per_cycle=2,
+    )
+
+    result = search_sources(state, provider=provider)
+
+    # Apenas 2 queries executadas (max_queries_per_cycle=2), 2 resultados cada
+    assert len(result["sources"]) == 4
+    assert result["search_requests_count"] == 2

@@ -14,6 +14,9 @@ class Source:
     title: str
     snippet: str = ""
     content: str = ""
+    published_date: str | None = None
+    score: float | None = None
+    highlights: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -112,6 +115,8 @@ class AccountIntelligenceState:
     # --- Controle de loop ---
     loop_counter: int = 0
     max_loops: int = 2
+    max_results_per_query: int = 5
+    max_queries_per_cycle: int = 3
 
     # --- Rastreabilidade ---
     all_source_urls: list[str] = field(default_factory=list)

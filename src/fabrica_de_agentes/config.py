@@ -10,6 +10,7 @@ class AgentConfig:
 
     max_research_loops: int = 2
     search_results_per_query: int = 5
+    max_queries_per_cycle: int = 3
     llm_model: str = "gpt-4o-mini"
     search_provider: str = "exa"
     verbose: bool = True
