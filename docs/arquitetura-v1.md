@@ -42,12 +42,12 @@ entity_relevance
    └── homônimo/ruído? → descartar
    ↓
 ContentExtractor
-   └── Firecrawl — etapa posterior
+   └── Firecrawl — etapa posterior quando snippets não bastarem
    ↓
 extract_evidence
    ↓
 LLMProvider
-   └── OpenCode — etapa posterior
+   └── OpenCode
    ↓
 analyze_account
    ↓
@@ -78,11 +78,11 @@ A Exa deve ficar atrás de uma abstração simples `SearchProvider`. Os nós do 
 
 ### Brave Search
 
-Será uma segunda fonte de descoberta e validação, adicionada depois da integração inicial da Exa.
+Será uma segunda fonte de descoberta e validação.
 
 Sua função é complementar a busca semântica com pesquisa web ampla, termos exatos, conteúdo recente e validação cruzada.
 
-Não faz parte da implementação da issue V1-02.
+Por decisão de Governança em 30/08/2026, sua implementação foi adiada até existir inteligência real de ponta a ponta. O motivo é pragmático: para a demonstração e comparação com a ferramenta existente, uma segunda busca não agrega valor se o agente ainda não interpreta a primeira.
 
 ### Validação de relevância da entidade
 
@@ -103,15 +103,17 @@ Uma fonte tecnicamente relevante, mas sem relação comprovada com a conta-alvo,
 
 ### Firecrawl
 
-Responsável, em etapa posterior, por obter e normalizar o conteúdo das páginas selecionadas para Markdown/texto limpo.
+Responsável, quando necessário, por obter e normalizar o conteúdo das páginas selecionadas para Markdown/texto limpo.
 
 Criar uma interface simples `ContentExtractor` para permitir substituição futura.
 
 Não usar crawling indiscriminado. Extrair somente URLs selecionadas pela etapa de pesquisa/ranking.
 
+Por decisão de Governança em 30/08/2026, Firecrawl não bloqueia a primeira versão funcional da inteligência. Inicialmente serão usados os highlights/snippets rastreáveis da Exa; Firecrawl entra quando os testes mostrarem que o conteúdo resumido é insuficiente.
+
 ### OpenCode
 
-Será a camada de inteligência da V1 em etapa posterior, evitando dependência obrigatória de uma conta separada da OpenAI API.
+É a camada de inteligência escolhida para a próxima etapa funcional, evitando dependência obrigatória de uma conta separada da OpenAI API.
 
 Responsabilidades esperadas:
 
@@ -127,7 +129,7 @@ Responsabilidades esperadas:
 
 Criar uma abstração `LLMProvider` para evitar espalhar chamadas específicas do executor/modelo pelos nós.
 
-A forma programática exata de integração com OpenCode deve ser validada antes da issue correspondente; não assumir contrato HTTP/CLI sem teste.
+A integração programática deve usar contrato oficial do OpenCode. Em 30/08/2026, a documentação oficial confirma que `opencode serve` expõe servidor HTTP/OpenAPI para uso programático, com criação de sessões e envio de mensagens. Não acoplar o domínio ao CLI interativo.
 
 ## Princípio de evidência
 
@@ -246,26 +248,26 @@ BRAVE_API_KEY
 FIRECRAWL_API_KEY
 ```
 
-OpenCode deve usar sua própria configuração/credenciais fora do repositório.
+OpenCode deve usar sua própria configuração/credenciais fora do repositório. Se o servidor HTTP for exposto além de loopback, deve ser protegido por autenticação e rede apropriada.
 
 Fornecer apenas `.env.example` sem valores reais.
 
 ## Sequência incremental de implementação
 
-1. **V1-02 — Exa:** busca real principal via `SearchProvider`.
-2. **V1-03 — Brave:** segunda fonte para complemento/validação.
-3. **V1-04 — Firecrawl:** extração limpa das páginas selecionadas.
-4. **V1-05 — OpenCode:** interpretação, evidência estruturada e Gap Analysis real.
-5. Executar pesquisa ponta a ponta em uma conta real conhecida e medir qualidade, custo e latência.
+1. **V1-02 — Exa:** busca real principal via `SearchProvider`. **Concluída.**
+2. **V1-03 — OpenCode + inteligência real:** remover mocks de análise, validar relevância, estruturar evidências, stack, stakeholders, gaps e briefing usando os resultados da Exa.
+3. **Teste ponta a ponta:** BDO Brasil como caso conhecido; medir qualidade, rastreabilidade, tempo e custo.
+4. **Interface web de apresentação + PDF executivo:** somente depois do motor produzir briefing real utilizável.
+5. **Brave:** segunda fonte quando necessária para melhorar cobertura/validação.
+6. **Firecrawl:** extração completa quando snippets/highlights forem insuficientes.
 
-A ordem pode ser ajustada pela Governança se testes mostrarem necessidade, mas novas possibilidades não entram automaticamente na V1.
+A ordem foi ajustada pela Governança por causa da demonstração de 31/08/2026: o objetivo imediato é provar superioridade de inteligência comercial em comparação com a ferramenta existente, não maximizar quantidade de provedores antes de existir análise real.
 
 ## Fora desta fase
 
 Não implementar agora:
 
 - banco de dados persistente;
-- UI sofisticada;
 - CRM;
 - RAG;
 - MCP;
@@ -274,6 +276,8 @@ Não implementar agora:
 - crawling massivo;
 - roteamento complexo entre vários modelos;
 - agentes de outras áreas da futura Fábrica de Agentes.
+
+Uma interface web simples de apresentação e exportação PDF deixou de ser considerada fora da V1 devido à necessidade concreta de demonstração, mas só deve ser implementada após o motor gerar resultado real.
 
 ## Critério para avançar
 
