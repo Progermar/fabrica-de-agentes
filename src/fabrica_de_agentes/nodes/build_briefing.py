@@ -2,14 +2,29 @@
 
 from fabrica_de_agentes.state import AccountIntelligenceState
 
+CLAIM_LABELS = {
+    "fact": "FATO CONFIRMADO",
+    "inference": "INFERENCIA",
+    "hypothesis": "HIPOTESE",
+    "gap": "GAP",
+}
 
-def _format_list(items: list, label: str) -> str:
-    """Formata uma lista para o briefing."""
+
+def _format_evidence_list(items: list, label: str) -> str:
+    """Formata lista de evidencias com classificacao e fonte."""
     if not items:
         return f"  - Nenhuma informacao encontrada para {label}\n"
     lines = []
     for item in items:
-        if hasattr(item, "__dict__"):
+        if hasattr(item, "claim_type") and hasattr(item, "source_url"):
+            tag = CLAIM_LABELS.get(getattr(item, "claim_type", ""), "")
+            prefix = f"[{tag}] " if tag else ""
+            attrs = []
+            for k, v in item.__dict__.items():
+                if v and k not in ("claim_type",):
+                    attrs.append(f"    {k}: {v}")
+            lines.append(f"  - {prefix}" + "\n".join(attrs))
+        elif hasattr(item, "__dict__"):
             attrs = []
             for k, v in item.__dict__.items():
                 if v:
@@ -20,10 +35,19 @@ def _format_list(items: list, label: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _format_simple_list(items: list, label: str) -> str:
+    """Formata lista simples (strings)."""
+    if not items:
+        return f"  - Nenhuma informacao encontrada para {label}\n"
+    lines = [f"  - {item}" for item in items]
+    return "\n".join(lines) + "\n"
+
+
 def build_briefing(state: AccountIntelligenceState) -> dict:
     """Constroi o briefing final de inteligencia da conta.
 
     Monta briefing estruturado com dados reais de busca e analise LLM.
+    Mostra classificacao (FATO/INFERENCIA/HIPOTESE/GAP) e fonte.
     """
     company = state.target_company
 
@@ -50,30 +74,33 @@ def build_briefing(state: AccountIntelligenceState) -> dict:
 
     # 2. Stakeholder Intelligence
     sections.append("2. STAKEHOLDER INTELLIGENCE")
-    sections.append(_format_list(state.stakeholders, "stakeholders"))
+    sections.append(_format_evidence_list(state.stakeholders, "stakeholders"))
 
     # 3. Technology / Stack Discovery
     sections.append("3. TECHNOLOGY / STACK DISCOVERY")
-    sections.append(_format_list(state.tech_signals, "stack"))
+    sections.append(_format_evidence_list(state.tech_signals, "stack"))
 
     # 4. Opportunity Discovery
     sections.append("4. OPPORTUNITY DISCOVERY")
-    sections.append(_format_list(state.opportunities, "oportunidades"))
+    sections.append(_format_evidence_list(state.opportunities, "oportunidades"))
 
     # 5. Rapport e Estrategia Comercial
     sections.append("5. RAPPORT E ESTRATEGIA COMERCIAL")
     sections.append("  Pontos de rapport:")
-    sections.append(_format_list(state.rapport_points, "rapport"))
+    sections.append(_format_simple_list(
+        [f"{rp.topic}: {rp.suggested_question}" for rp in state.rapport_points],
+        "rapport",
+    ))
     sections.append("  Perguntas de descoberta:")
-    sections.append(_format_list(state.discovery_questions, "perguntas"))
+    sections.append(_format_simple_list(state.discovery_questions, "perguntas"))
     sections.append("  Riscos comerciais:")
-    sections.append(_format_list(state.commercial_risks, "riscos"))
+    sections.append(_format_simple_list(state.commercial_risks, "riscos"))
     sections.append("  Proximas acoes sugeridas:")
-    sections.append(_format_list(state.suggested_next_actions, "acoes"))
+    sections.append(_format_simple_list(state.suggested_next_actions, "acoes"))
 
     # 6. GAP Analysis
     sections.append("6. GAP ANALYSIS")
-    sections.append(_format_list(state.gaps, "gaps"))
+    sections.append(_format_evidence_list(state.gaps, "gaps"))
 
     # 7. Fontes e Rastreabilidade
     sections.append("7. FONTES E RASTREABILIDADE")
@@ -95,15 +122,28 @@ def build_briefing(state: AccountIntelligenceState) -> dict:
     facts = [e for e in state.evidence if e.claim_type == "fact"]
     inferences = [e for e in state.evidence if e.claim_type == "inference"]
     hypotheses = [e for e in state.evidence if e.claim_type == "hypothesis"]
+    gaps_ev = [e for e in state.evidence if e.claim_type == "gap"]
     sections.append(f"    - Fatos confirmados: {len(facts)}")
     sections.append(f"    - Inferencias: {len(inferences)}")
     sections.append(f"    - Hipoteses: {len(hypotheses)}")
+    sections.append(f"    - Gaps de informacao: {len(gaps_ev)}")
+
+    if facts:
+        sections.append("\n  Fatos confirmados:")
+        for ev in facts:
+            sections.append(f"    * [{ev.category}] {ev.claim}")
+            sections.append(f"      Fonte: {ev.source_url}")
+
+    if gaps_ev:
+        sections.append("\n  Gaps de informacao:")
+        for ev in gaps_ev:
+            sections.append(f"    * [{ev.category}] {ev.claim}")
 
     sections.append(
         "\n  Nota: Fontes devem ser validadas pelo vendedor antes de uso comercial."
     )
     sections.append(
-        "  Distincao entre fato, inferencia e hipotese indicada em cada evidencia.\n"
+        "  Distincao entre fato, inferencia e hipotese indicada em cada item.\n"
     )
 
     sections.append(f"{'='*60}")

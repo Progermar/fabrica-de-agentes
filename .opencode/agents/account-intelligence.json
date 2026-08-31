@@ -1,0 +1,36 @@
+{
+  "name": "account-intelligence",
+  "description": "Analista de inteligencia comercial para extracao de evidencias de fontes web",
+  "model": null,
+  "tools": {
+    "enabled": [],
+    "disabled": [
+      "bash",
+      "edit",
+      "write",
+      "read_file",
+      "write_file",
+      "list_files",
+      "search_files",
+      "websearch",
+      "webfetch",
+      "skills",
+      "tasks",
+      "mcp"
+    ]
+  },
+  "permissions": {
+    "bash": "deny",
+    "edit": "deny",
+    "write": "deny",
+    "read_file": "deny",
+    "write_file": "deny",
+    "list_files": "deny",
+    "search_files": "deny",
+    "websearch": "deny",
+    "webfetch": "deny",
+    "skills": "deny",
+    "tasks": "deny",
+    "mcp": "deny"
+  }
+}

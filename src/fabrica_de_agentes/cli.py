@@ -38,6 +38,7 @@ def run_agent(
     max_loops: int | None = None,
     provider_name: str | None = None,
     llm_name: str | None = None,
+    require_llm: bool = False,
 ) -> str:
     """Executa o agente para uma empresa-alvo e retorna o briefing."""
     config = get_config()
@@ -55,7 +56,7 @@ def run_agent(
         except ValueError:
             llm = None
 
-    graph = build_graph(provider=provider, llm=llm)
+    graph = build_graph(provider=provider, llm=llm, require_llm=require_llm)
 
     initial_state = AccountIntelligenceState(
         target_company=target_company,
@@ -100,6 +101,11 @@ def main():
         default=None,
         help="Provedor de LLM (padrao: opencode se OPENCODE_SERVER_PASSWORD configurada)",
     )
+    parser.add_argument(
+        "--require-llm",
+        action="store_true",
+        help="Falha se LLM nao estiver disponivel (execucao comercial)",
+    )
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
@@ -107,7 +113,13 @@ def main():
     print(f"  Empresa-alvo: {args.company}")
     print(f"{'='*60}\n")
 
-    briefing = run_agent(args.company, args.max_loops, args.provider, args.llm)
+    briefing = run_agent(
+        args.company,
+        args.max_loops,
+        args.provider,
+        args.llm,
+        args.require_llm,
+    )
     print(briefing)
 
 

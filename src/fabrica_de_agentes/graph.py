@@ -21,10 +21,13 @@ from fabrica_de_agentes.state import AccountIntelligenceState
 def _route_after_gap(state: AccountIntelligenceState) -> str:
     """Decide se continua pesquisando ou finaliza.
 
-    Se o contador de loops nao atingiu o maximo, volta para search_sources.
-    Caso contrario, segue para build_briefing.
+    Continua SOMENTE se:
+    - gap_analysis identificou nova query pesquisavel (has_new_researchable_gap)
+    - E loop_counter < max_loops
+
+    Caso contrario, finaliza.
     """
-    if state.loop_counter < state.max_loops:
+    if state.has_new_researchable_gap and state.loop_counter < state.max_loops:
         return "search_sources"
     return "build_briefing"
 
@@ -50,18 +53,26 @@ def _make_llm_node(llm: LLMProvider | None, base_fn):
 def build_graph(
     provider: SearchProvider | None = None,
     llm: LLMProvider | None = None,
+    require_llm: bool = False,
 ):
     """Constroi e compila o grafo de Account Intelligence.
 
     Args:
         provider: Provedor de busca. Se None, usa MockSearchProvider.
         llm: Provedor de LLM. Se None, nos de analise retornam vazio.
+        require_llm: Se True, falha se llm for None (execucao comercial).
 
     Fluxo:
         start -> analyze_target -> plan_research -> search_sources
         -> extract_evidence -> analyze_account -> gap_analysis
         -> [condicional] -> search_sources (loop) ou build_briefing -> end
     """
+    if require_llm and llm is None:
+        raise ValueError(
+            "Execucao comercial requer LLM configurado. "
+            "Passe llm=OpenCodeProvider() ou use --llm opencode."
+        )
+
     graph_builder = StateGraph(AccountIntelligenceState)
 
     search_node = _make_search_sources_node(provider)

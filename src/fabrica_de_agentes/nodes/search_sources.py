@@ -36,20 +36,22 @@ def search_sources(
 ) -> dict:
     """Realiza busca nas fontes para cada query usando o provider configurado.
 
-    O provider e injetado como parametro opcional para permitir
-    desacoplamento do LangGraph da implementacao de busca.
-    Quando None, usa MockSearchProvider para manter compatibilidade
-    com testes offline existentes.
+    Se next_research_queries estiver configurado (apos gap_analysis),
+    usa essas queries. Caso contrario, usa research_queries existentes.
 
     Raises:
-        SearchProviderError: Se a busca falhar, com contexto da query e provedor.
+        RuntimeError: Se a busca falhar, com contexto de provider e query.
     """
     if provider is None:
         from fabrica_de_agentes.search.mock_provider import MockSearchProvider
 
         provider = MockSearchProvider()
 
-    queries = state.research_queries
+    if state.next_research_queries:
+        queries = state.next_research_queries
+    else:
+        queries = state.research_queries
+
     loop = state.loop_counter
     max_results = state.max_results_per_query
     max_queries = state.max_queries_per_cycle
@@ -59,11 +61,20 @@ def search_sources(
     total_requests = 0
     total_cost = 0.0
 
+    provider_name = type(provider).__name__
+
     for query in queries[:max_queries]:
-        response = provider.search(
-            query=query,
-            num_results=max_results,
-        )
+        try:
+            response = provider.search(
+                query=query,
+                num_results=max_results,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Busca falhou: provider={provider_name}, "
+                f"query='{query}', erro={e}"
+            ) from e
+
         for result in response.results:
             source = _search_result_to_source(result)
             new_sources.append(source)
@@ -76,9 +87,18 @@ def search_sources(
     all_sources = _deduplicate_urls(list(state.sources) + new_sources)
     all_urls = list(dict.fromkeys(state.all_source_urls + new_urls))
 
+    # Atualiza research_queries com as queries realmente executadas
+    updated_queries = list(state.research_queries)
+    for q in queries[:max_queries]:
+        if q not in updated_queries:
+            updated_queries.append(q)
+
     return {
         "sources": all_sources,
         "all_source_urls": all_urls,
+        "research_queries": updated_queries,
+        "next_research_queries": [],
+        "has_new_researchable_gap": False,
         "loop_counter": loop + 1,
         "search_requests_count": state.search_requests_count + total_requests,
         "search_cost_dollars": state.search_cost_dollars + total_cost,

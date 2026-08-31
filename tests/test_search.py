@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from unittest.mock import MagicMock, patch
 
@@ -411,8 +412,57 @@ class TestGraphSmokeOffline:
         assert "Offline Corp" in result["briefing_final"]
 
     def test_full_flow_two_loops_offline(self):
-        """Grafo executa com 2 loops完全 offline."""
-        graph = build_graph(provider=MockSearchProvider(results_per_query=2))
+        """Grafo executa com 2 loops完全 offline com LLM mockado."""
+        from fabrica_de_agentes.llm.base import LLMProvider, LLMResponse
+
+        mock_llm = MagicMock(spec=LLMProvider)
+
+        extract_resp = {
+            "sources": [{
+                "url": "https://ex.com/a",
+                "relevant": True,
+                "relevance_reason": "ok",
+                "claims": [],
+            }]
+        }
+        analyze_resp = {
+            "tech_signals": [],
+            "stakeholders": [],
+            "opportunities": [],
+            "commercial_risks": [],
+        }
+        gap_resp_1 = {
+            "gaps": [{
+                "description": "Gap",
+                "criticality": "alta",
+                "discovery_action": "Pesquisar",
+                "new_query": "Nova query especifica",
+                "priority_for_next_interaction": 1,
+            }],
+            "rapport_points": [],
+            "discovery_questions": [],
+            "suggested_next_actions": [],
+        }
+        gap_resp_2 = {
+            "gaps": [],
+            "rapport_points": [],
+            "discovery_questions": [],
+            "suggested_next_actions": [],
+        }
+
+        mock_llm.chat.side_effect = [
+            LLMResponse(text=json.dumps(extract_resp)),
+            LLMResponse(text=json.dumps(analyze_resp)),
+            LLMResponse(text=json.dumps(gap_resp_1)),
+            LLMResponse(text=json.dumps(extract_resp)),
+            LLMResponse(text=json.dumps(analyze_resp)),
+            LLMResponse(text=json.dumps(gap_resp_2)),
+        ]
+
+        graph = build_graph(
+            provider=MockSearchProvider(results_per_query=2),
+            llm=mock_llm,
+        )
 
         state = AccountIntelligenceState(
             target_company="Loop Test",
@@ -423,7 +473,7 @@ class TestGraphSmokeOffline:
 
         assert result["loop_counter"] == 2
         assert len(result["sources"]) > 4
-        assert result["search_requests_count"] == 6  # 3 queries x 2 loops
+        assert result["search_requests_count"] == 4
 
     def test_graph_without_provider_uses_mock(self):
         """Grafo sem provider injetado usa mock por padrao."""

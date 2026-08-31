@@ -42,6 +42,8 @@ class Stakeholder:
     role: str = ""
     influence: str = ""
     evidence: str = ""
+    claim_type: Literal["fact", "inference", "hypothesis"] = "inference"
+    source_url: str = ""
 
 
 @dataclass
@@ -49,8 +51,10 @@ class TechSignal:
     """Um sinal de stack tecnologica detectado."""
 
     technology: str
+    purpose: str = ""
     evidence: str = ""
     confidence: Literal["alta", "media", "baixa"] = "media"
+    claim_type: Literal["fact", "inference", "hypothesis"] = "inference"
     source_url: str = ""
 
 
@@ -62,6 +66,8 @@ class Opportunity:
     alignment: str = ""
     evidence: str = ""
     priority: Literal["alta", "media", "baixa"] = "media"
+    claim_type: Literal["inference", "hypothesis"] = "hypothesis"
+    source_url: str = ""
 
 
 @dataclass
@@ -122,9 +128,12 @@ class AccountIntelligenceState:
     max_loops: int = 2
     max_results_per_query: int = 5
     max_queries_per_cycle: int = 3
+    has_new_researchable_gap: bool = False
+    next_research_queries: list[str] = field(default_factory=list)
 
     # --- Rastreabilidade ---
     all_source_urls: list[str] = field(default_factory=list)
+    analyzed_source_urls: list[str] = field(default_factory=list)
     search_requests_count: int = 0
     search_cost_dollars: float = 0.0
     llm_requests_count: int = 0

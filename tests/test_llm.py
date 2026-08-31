@@ -21,9 +21,6 @@ from fabrica_de_agentes.state import (
     Source,
 )
 
-# Import build_graph only where needed to avoid circular imports
-
-
 # =============================================================================
 # Testes do OpenCodeProvider com HTTP mockado
 # =============================================================================
@@ -68,7 +65,7 @@ class TestOpenCodeProvider:
         """Health check retorna False quando servidor falha."""
         provider = OpenCodeProvider(password="test-pw")
 
-        with patch("urllib.request.urlopen", side_effect=RuntimeError("connection refused")):
+        with patch("urllib.request.urlopen", side_effect=RuntimeError("conn refused")):
             assert provider.health_check() is False
 
     def test_chat_valid_response(self):
@@ -109,7 +106,7 @@ class TestOpenCodeProvider:
         assert result.cost_dollars == 0.01
 
     def test_chat_invalid_json_response(self):
-        """Trata resposta que nao e JSON valido."""
+        """Trata resposta que nao e JSON valido no nivel HTTP."""
         provider = OpenCodeProvider(password="test-pw")
 
         session_response = MagicMock()
@@ -134,9 +131,86 @@ class TestOpenCodeProvider:
         """Lida com servidor indisponivel."""
         provider = OpenCodeProvider(password="test-pw")
 
-        with patch("urllib.request.urlopen", side_effect=RuntimeError("connection refused")):
+        with patch("urllib.request.urlopen", side_effect=RuntimeError("conn refused")):
             with pytest.raises(RuntimeError, match="indisponivel"):
                 provider.chat("test prompt")
+
+    def test_chat_uses_system_field_separately(self):
+        """Verifica que system e enviado como campo separado, nao concatenado."""
+        provider = OpenCodeProvider(password="test-pw")
+
+        session_response = MagicMock()
+        session_response.read.return_value = json.dumps(
+            {"id": "ses_test123"}
+        ).encode()
+        session_response.__enter__ = lambda s: s
+        session_response.__exit__ = MagicMock(return_value=False)
+
+        chat_response = MagicMock()
+        chat_response.read.return_value = json.dumps(
+            {
+                "info": {"modelID": "gpt-4o", "tokens": {"input": 10, "output": 5}, "cost": 0.001},
+                "parts": [{"type": "text", "text": "ok"}],
+            }
+        ).encode()
+        chat_response.__enter__ = lambda s: s
+        chat_response.__exit__ = MagicMock(return_value=False)
+
+        captured_requests = []
+
+        def capture_urlopen(req, **kwargs):
+            captured_requests.append(req)
+            if len(captured_requests) == 1:
+                return session_response
+            return chat_response
+
+        with patch("urllib.request.urlopen", side_effect=capture_urlopen):
+            provider.chat("user prompt", system="system instruction")
+
+        msg_request = captured_requests[1]
+        body = json.loads(msg_request.data.decode())
+
+        assert "system" in body
+        assert body["system"] == "system instruction"
+        assert body["parts"][0]["text"] == "user prompt"
+        assert "system instruction" not in body["parts"][0]["text"]
+
+    def test_chat_uses_agent_field(self):
+        """Verifica que agent e enviado na mensagem."""
+        provider = OpenCodeProvider(password="test-pw", agent="my-agent")
+
+        session_response = MagicMock()
+        session_response.read.return_value = json.dumps(
+            {"id": "ses_test123"}
+        ).encode()
+        session_response.__enter__ = lambda s: s
+        session_response.__exit__ = MagicMock(return_value=False)
+
+        chat_response = MagicMock()
+        chat_response.read.return_value = json.dumps(
+            {
+                "info": {"modelID": "gpt-4o", "tokens": {"input": 10, "output": 5}, "cost": 0.001},
+                "parts": [{"type": "text", "text": "ok"}],
+            }
+        ).encode()
+        chat_response.__enter__ = lambda s: s
+        chat_response.__exit__ = MagicMock(return_value=False)
+
+        captured_requests = []
+
+        def capture_urlopen(req, **kwargs):
+            captured_requests.append(req)
+            if len(captured_requests) == 1:
+                return session_response
+            return chat_response
+
+        with patch("urllib.request.urlopen", side_effect=capture_urlopen):
+            provider.chat("test")
+
+        msg_request = captured_requests[1]
+        body = json.loads(msg_request.data.decode())
+
+        assert body.get("agent") == "my-agent"
 
 
 # =============================================================================
@@ -175,22 +249,17 @@ class TestExtractEvidence:
 
         mock_llm = MagicMock(spec=LLMProvider)
         mock_llm.chat.return_value = LLMResponse(
-            text=json.dumps(
-                {
-                    "sources": [
-                        {
-                            "url": "https://example.com/bdo-unrelated",
-                            "relevant": False,
-                            "relevance_reason": "Empresa diferente, homonimo",
-                            "claims": [],
-                        }
-                    ]
-                }
-            )
+            text=json.dumps({
+                "sources": [{
+                    "url": "https://example.com/bdo-unrelated",
+                    "relevant": False,
+                    "relevance_reason": "Empresa diferente",
+                    "claims": [],
+                }]
+            })
         )
 
         result = extract_evidence(state, llm=mock_llm)
-
         assert len(result["evidence"]) == 0
         assert state.sources[0].relevant is False
 
@@ -199,135 +268,137 @@ class TestExtractEvidence:
         state = AccountIntelligenceState(
             target_company="Test Corp",
             sources=[
-                Source(
-                    url="https://example.com/article",
-                    title="Article Title",
-                    snippet="Important snippet",
-                ),
+                Source(url="https://example.com/art", title="Title", snippet="Snippet"),
             ],
         )
 
         mock_llm = MagicMock(spec=LLMProvider)
         mock_llm.chat.return_value = LLMResponse(
-            text=json.dumps(
-                {
-                    "sources": [
-                        {
-                            "url": "https://example.com/article",
-                            "relevant": True,
-                            "relevance_reason": "Artigo sobre a empresa",
-                            "claims": [
-                                {
-                                    "claim": "Test Corp usa TOTVS",
-                                    "claim_type": "fact",
-                                    "category": "stack",
-                                    "confidence": "alta",
-                                    "context": "Trecho do artigo mencionando TOTVS",
-                                }
-                            ],
-                        }
-                    ]
-                }
-            )
+            text=json.dumps({
+                "sources": [{
+                    "url": "https://example.com/art",
+                    "relevant": True,
+                    "relevance_reason": "Sobre a empresa",
+                    "claims": [{
+                        "claim": "Test Corp usa ERP X",
+                        "claim_type": "fact",
+                        "category": "stack",
+                        "confidence": "alta",
+                        "context": "Trecho do artigo",
+                    }],
+                }]
+            })
         )
 
         result = extract_evidence(state, llm=mock_llm)
-
         assert len(result["evidence"]) == 1
         ev = result["evidence"][0]
-        assert ev.source_url == "https://example.com/article"
-        assert ev.source_title == "Article Title"
-        assert ev.context == "Trecho do artigo mencionando TOTVS"
+        assert ev.source_url == "https://example.com/art"
+        assert ev.source_title == "Title"
+        assert ev.context == "Trecho do artigo"
         assert ev.claim_type == "fact"
 
     def test_system_not_confirmed_generates_gap(self):
-        """Sistema nao confirmado deve gerar evidencia tipo gap, nao palpite."""
+        """Sistema nao confirmado gera evidencia tipo gap."""
         state = AccountIntelligenceState(
             target_company="Contabilidade Teste",
-            sources=[
-                Source(
-                    url="https://example.com/contabilidade",
-                    title="Contabilidade Teste",
-                    snippet="Escritorio de contabilidade",
-                ),
-            ],
+            sources=[Source(url="https://ex.com/c", title="C", snippet="s")],
         )
 
         mock_llm = MagicMock(spec=LLMProvider)
         mock_llm.chat.return_value = LLMResponse(
-            text=json.dumps(
-                {
-                    "sources": [
-                        {
-                            "url": "https://example.com/contabilidade",
-                            "relevant": True,
-                            "relevance_reason": "Site da empresa",
-                            "claims": [
-                                {
-                                    "claim": "Sistema ERP principal nao identificado",
-                                    "claim_type": "gap",
-                                    "category": "stack",
-                                    "confidence": "baixa",
-                                    "context": "Nao ha mencao publica ao sistema",
-                                }
-                            ],
-                        }
-                    ]
-                }
-            )
+            text=json.dumps({
+                "sources": [{
+                    "url": "https://ex.com/c",
+                    "relevant": True,
+                    "relevance_reason": "Site da empresa",
+                    "claims": [{
+                        "claim": "Sistema ERP nao identificado",
+                        "claim_type": "gap",
+                        "category": "stack",
+                        "confidence": "baixa",
+                        "context": "Nao ha mencao",
+                    }],
+                }]
+            })
         )
 
         result = extract_evidence(state, llm=mock_llm)
-
         assert len(result["evidence"]) == 1
         assert result["evidence"][0].claim_type == "gap"
 
-    def test_system_confirmed_generates_tech_signal(self):
-        """Sistema confirmado por fonte gera evidencia tipo fact."""
+    def test_json_invalid_raises_error(self):
+        """JSON invalido na resposta do LLM levanta RuntimeError claro."""
         state = AccountIntelligenceState(
-            target_company="BDO Brasil",
+            target_company="Test",
+            sources=[Source(url="https://ex.com", title="T", snippet="s")],
+        )
+
+        mock_llm = MagicMock(spec=LLMProvider)
+        mock_llm.chat.return_value = LLMResponse(text="Nao sou JSON valido")
+
+        with pytest.raises(RuntimeError, match="extract_evidence.*JSON valido"):
+            extract_evidence(state, llm=mock_llm)
+
+    def test_only_new_sources_analyzed(self):
+        """Analisa somente fontes novas, nao reanalisa fontes ja processadas."""
+        state = AccountIntelligenceState(
+            target_company="Test",
             sources=[
-                Source(
-                    url="https://example.com/bdo-totvs",
-                    title="BDO usa TOTVS Protheus",
-                    snippet="BDO Brasil utiliza TOTVS Protheus para BPO",
-                ),
+                Source(url="https://ex.com/old", title="Old", snippet="s"),
+                Source(url="https://ex.com/new", title="New", snippet="s"),
             ],
+            analyzed_source_urls=["https://ex.com/old"],
         )
 
         mock_llm = MagicMock(spec=LLMProvider)
         mock_llm.chat.return_value = LLMResponse(
-            text=json.dumps(
-                {
-                    "sources": [
-                        {
-                            "url": "https://example.com/bdo-totvs",
-                            "relevant": True,
-                            "relevance_reason": "Artigo confirma uso do TOTVS",
-                            "claims": [
-                                {
-                                    "claim": (
-                                "BDO Brasil utiliza TOTVS Protheus para BPO"
-                            ),
-                                    "claim_type": "fact",
-                                    "category": "stack",
-                                    "confidence": "alta",
-                                    "context": "Artigo menciona explicitamente TOTVS Protheus",
-                                }
-                            ],
-                        }
-                    ]
-                }
-            )
+            text=json.dumps({
+                "sources": [{
+                    "url": "https://ex.com/new",
+                    "relevant": True,
+                    "relevance_reason": "Nova fonte",
+                    "claims": [{
+                        "claim": "Claim novo",
+                        "claim_type": "fact",
+                        "category": "perfil",
+                        "confidence": "alta",
+                        "context": "ctx",
+                    }],
+                }]
+            })
         )
+
+        extract_evidence(state, llm=mock_llm)
+
+        call_args = mock_llm.chat.call_args
+        prompt_text = call_args[0][0]
+        assert "https://ex.com/old" not in prompt_text
+        assert "https://ex.com/new" in prompt_text
+
+    def test_deduplicates_evidence(self):
+        """Evidencias duplicadas (source_url, claim, claim_type) sao removidas."""
+        state = AccountIntelligenceState(
+            target_company="Test",
+            sources=[Source(url="https://ex.com/a", title="A", snippet="s")],
+            evidence=[
+                Evidence(
+                    claim="Claim duplicado",
+                    source_url="https://ex.com/a",
+                    claim_type="fact",
+                    category="stack",
+                ),
+            ],
+            analyzed_source_urls=["https://ex.com/a"],
+        )
+
+        mock_llm = MagicMock(spec=LLMProvider)
 
         result = extract_evidence(state, llm=mock_llm)
 
         assert len(result["evidence"]) == 1
-        ev = result["evidence"][0]
-        assert ev.claim_type == "fact"
-        assert ev.confidence == "alta"
-        assert "TOTVS" in ev.claim
+        assert result["evidence"][0].claim == "Claim duplicado"
+        mock_llm.chat.assert_not_called()
 
 
 # =============================================================================
@@ -351,71 +422,125 @@ class TestAnalyzeAccount:
             target_company="Test Corp",
             evidence=[
                 Evidence(
-                    claim="Joao Silva trabalha na empresa",
+                    claim="Joao Silva trabalha la",
                     source_url="https://linkedin.com/joao",
                     category="stakeholder",
                     confidence="media",
                     claim_type="inference",
                 ),
             ],
+            all_source_urls=["https://linkedin.com/joao"],
         )
 
         mock_llm = MagicMock(spec=LLMProvider)
         mock_llm.chat.return_value = LLMResponse(
-            text=json.dumps(
-                {
-                    "tech_signals": [],
-                    "stakeholders": [
-                        {
-                            "name": "Joao Silva",
-                            "role": "Funcionario de TI",
-                            "influence": "Desconhecida - cargo observado, nao decisor confirmado",
-                            "evidence": "Perfil publico no LinkedIn",
-                            "claim_type": "inference",
-                        }
-                    ],
-                    "opportunities": [],
-                    "commercial_risks": [],
-                }
-            )
+            text=json.dumps({
+                "tech_signals": [],
+                "stakeholders": [{
+                    "name": "Joao Silva",
+                    "role": "Funcionario de TI",
+                    "influence": "Desconhecida - cargo observado",
+                    "evidence": "LinkedIn",
+                    "claim_type": "inference",
+                    "source_url": "https://linkedin.com/joao",
+                }],
+                "opportunities": [],
+                "commercial_risks": [],
+            })
         )
 
         result = analyze_account(state, llm=mock_llm)
-
         assert len(result["stakeholders"]) == 1
         sh = result["stakeholders"][0]
-        assert "Desconhecida" in sh.influence or "inferido" in sh.influence.lower()
+        assert sh.claim_type == "inference"
+        assert sh.source_url == "https://linkedin.com/joao"
 
     def test_opportunity_without_evidence_is_hypothesis(self):
-        """Oportunidade sem evidencia deve ser hipotes, nao fato."""
+        """Oportunidade sem evidencia deve ser hipotes."""
+        state = AccountIntelligenceState(target_company="Test Corp", evidence=[])
+
+        mock_llm = MagicMock(spec=LLMProvider)
+        mock_llm.chat.return_value = LLMResponse(
+            text=json.dumps({
+                "tech_signals": [],
+                "stakeholders": [],
+                "opportunities": [{
+                    "description": "Automacao com IA",
+                    "alignment": "Portfolio Teklamatik",
+                    "evidence": "Sem evidencia",
+                    "priority": "media",
+                    "claim_type": "hypothesis",
+                }],
+                "commercial_risks": [],
+            })
+        )
+
+        result = analyze_account(state, llm=mock_llm)
+        assert len(result["opportunities"]) == 1
+        assert result["opportunities"][0].claim_type == "hypothesis"
+
+    def test_json_invalid_raises_error(self):
+        """JSON invalido levanta RuntimeError claro."""
+        state = AccountIntelligenceState(target_company="Test", evidence=[])
+
+        mock_llm = MagicMock(spec=LLMProvider)
+        mock_llm.chat.return_value = LLMResponse(text="invalid json!!!")
+
+        with pytest.raises(RuntimeError, match="analyze_account.*JSON valido"):
+            analyze_account(state, llm=mock_llm)
+
+    def test_tech_signal_preserves_purpose(self):
+        """TechSignal preserva purpose do LLM."""
+        state = AccountIntelligenceState(target_company="Test", evidence=[])
+
+        mock_llm = MagicMock(spec=LLMProvider)
+        mock_llm.chat.return_value = LLMResponse(
+            text=json.dumps({
+                "tech_signals": [{
+                    "technology": "Sistema X",
+                    "purpose": "Gestao contabil",
+                    "evidence": "Evidencia",
+                    "confidence": "alta",
+                    "claim_type": "fact",
+                    "source_url": "https://ex.com/a",
+                }],
+                "stakeholders": [],
+                "opportunities": [],
+                "commercial_risks": [],
+            })
+        )
+
+        result = analyze_account(state, llm=mock_llm)
+        assert result["tech_signals"][0].purpose == "Gestao contabil"
+        assert result["tech_signals"][0].claim_type == "fact"
+
+    def test_invalid_source_url_rejected(self):
+        """URL invalida (nao nas fontes) e rejeitada."""
         state = AccountIntelligenceState(
-            target_company="Test Corp",
+            target_company="Test",
             evidence=[],
+            all_source_urls=["https://ex.com/real"],
         )
 
         mock_llm = MagicMock(spec=LLMProvider)
         mock_llm.chat.return_value = LLMResponse(
-            text=json.dumps(
-                {
-                    "tech_signals": [],
-                    "stakeholders": [],
-                    "opportunities": [
-                        {
-                            "description": "Automacao com IA",
-                            "alignment": "Ad IA da Teklamatik",
-                            "evidence": "Sem evidencia direta",
-                            "priority": "media",
-                            "claim_type": "hypothesis",
-                        }
-                    ],
-                    "commercial_risks": [],
-                }
-            )
+            text=json.dumps({
+                "tech_signals": [{
+                    "technology": "Sys",
+                    "purpose": "",
+                    "evidence": "ev",
+                    "confidence": "media",
+                    "claim_type": "inference",
+                    "source_url": "https://invented.com/fake",
+                }],
+                "stakeholders": [],
+                "opportunities": [],
+                "commercial_risks": [],
+            })
         )
 
         result = analyze_account(state, llm=mock_llm)
-
-        assert len(result["opportunities"]) == 1
+        assert result["tech_signals"][0].source_url == ""
 
 
 # =============================================================================
@@ -431,49 +556,115 @@ class TestGapAnalysis:
         state = AccountIntelligenceState(target_company="Test")
         result = gap_analysis(state, llm=None)
         assert result["gaps"] == []
+        assert result["has_new_researchable_gap"] is False
 
     def test_researchable_gap_generates_new_query(self):
-        """Gap pesquisavel gera nova query quando ha loop disponivel."""
+        """Gap pesquisavel gera nova query e seta has_new_researchable_gap."""
         state = AccountIntelligenceState(
             target_company="Test Corp",
             loop_counter=0,
             max_loops=2,
             evidence=[
                 Evidence(
-                    claim="Empresa atua no segmento contabil",
-                    source_url="https://example.com",
+                    claim="Empresa contabil",
+                    source_url="https://ex.com",
                     category="perfil",
                     confidence="media",
                     claim_type="inference",
                 ),
             ],
-            all_source_urls=["https://example.com"],
+            all_source_urls=["https://ex.com"],
+            research_queries=["query original"],
         )
 
         mock_llm = MagicMock(spec=LLMProvider)
         mock_llm.chat.return_value = LLMResponse(
-            text=json.dumps(
-                {
-                    "gaps": [
-                        {
-                            "description": "ERP principal nao confirmado",
-                            "criticality": "alta",
-                            "discovery_action": "Pesquisar vagas e licitacoes",
-                            "new_query": "Test Corp ERP licitacao vaga",
-                            "priority_for_next_interaction": 1,
-                        }
-                    ],
-                    "rapport_points": [],
-                    "discovery_questions": ["Qual sistema voces usam?"],
-                    "suggested_next_actions": ["Agendar call"],
-                }
-            )
+            text=json.dumps({
+                "gaps": [{
+                    "description": "ERP nao confirmado",
+                    "criticality": "alta",
+                    "discovery_action": "Pesquisar vagas",
+                    "new_query": "Test Corp licitacao ERP vaga",
+                    "priority_for_next_interaction": 1,
+                }],
+                "rapport_points": [],
+                "discovery_questions": [],
+                "suggested_next_actions": [],
+            })
         )
 
         result = gap_analysis(state, llm=mock_llm)
 
-        assert len(result["gaps"]) == 1
-        assert result["gaps"][0].criticality == "alta"
+        assert result["has_new_researchable_gap"] is True
+        assert "Test Corp licitacao ERP vaga" in result["next_research_queries"]
+
+    def test_no_researchable_gap_sets_flag_false(self):
+        """Gap nao pesquisavel (new_query vazio) nao seta flag de loop."""
+        state = AccountIntelligenceState(
+            target_company="Test Corp",
+            loop_counter=0,
+            max_loops=2,
+            evidence=[],
+            all_source_urls=[],
+        )
+
+        mock_llm = MagicMock(spec=LLMProvider)
+        mock_llm.chat.return_value = LLMResponse(
+            text=json.dumps({
+                "gaps": [{
+                    "description": "Decisor nao identificado",
+                    "criticality": "alta",
+                    "discovery_action": "Perguntar na call",
+                    "new_query": "",
+                    "priority_for_next_interaction": 1,
+                }],
+                "rapport_points": [],
+                "discovery_questions": [],
+                "suggested_next_actions": [],
+            })
+        )
+
+        result = gap_analysis(state, llm=mock_llm)
+        assert result["has_new_researchable_gap"] is False
+        assert result["next_research_queries"] == []
+
+    def test_json_invalid_raises_error(self):
+        """JSON invalido levanta RuntimeError claro."""
+        state = AccountIntelligenceState(target_company="Test", evidence=[])
+
+        mock_llm = MagicMock(spec=LLMProvider)
+        mock_llm.chat.return_value = LLMResponse(text="NOT JSON")
+
+        with pytest.raises(RuntimeError, match="gap_analysis.*JSON valido"):
+            gap_analysis(state, llm=mock_llm)
+
+    def test_duplicate_query_not_added(self):
+        """Query ja executada nao e adicionada a next_research_queries."""
+        state = AccountIntelligenceState(
+            target_company="Test",
+            evidence=[],
+            all_source_urls=[],
+            research_queries=["Test Corp ERP"],
+        )
+
+        mock_llm = MagicMock(spec=LLMProvider)
+        mock_llm.chat.return_value = LLMResponse(
+            text=json.dumps({
+                "gaps": [{
+                    "description": "Gap",
+                    "criticality": "alta",
+                    "discovery_action": "Pesquisar",
+                    "new_query": "Test Corp ERP",
+                    "priority_for_next_interaction": 1,
+                }],
+                "rapport_points": [],
+                "discovery_questions": [],
+                "suggested_next_actions": [],
+            })
+        )
+
+        result = gap_analysis(state, llm=mock_llm)
+        assert result["next_research_queries"] == []
 
 
 # =============================================================================
@@ -501,14 +692,13 @@ class TestGraphSmokeOffline:
         assert "Offline Corp" in result["briefing_final"]
         assert len(result["evidence"]) == 0
         assert len(result["stakeholders"]) == 0
-        assert len(result["tech_signals"]) == 0
 
     def test_briefing_no_mock_data_offline(self):
         """Briefing nao contem dados mockados quando executado offline."""
         graph = build_graph(provider=MockSearchProvider())
 
         state = AccountIntelligenceState(
-            target_company="No Mock Offline",
+            target_company="No Mock",
             max_loops=1,
         )
 
@@ -517,128 +707,225 @@ class TestGraphSmokeOffline:
 
         assert "MOCKADO" not in briefing
         assert "DADOS PARCIALMENTE MOCKADOS" not in briefing
-        assert "Chamadas de LLM realizadas: 0" in briefing
+
+    def test_require_llm_fails_without_llm(self):
+        """require_llm=True falha se llm for None."""
+        with pytest.raises(ValueError, match="requer LLM"):
+            build_graph(provider=MockSearchProvider(), require_llm=True)
 
 
 # =============================================================================
-# Testes de integracao extract_evidence -> analyze_account -> gap_analysis
+# Testes de integracao: gap_analysis -> search_sources com nova query
 # =============================================================================
 
 
-class TestAnalysisPipeline:
-    """Testes de integracao dos nos de analise com LLM mockado."""
+class TestGapLoopIntegration:
+    """Testes de integracao do loop de gap_analysis com search_sources."""
 
-    def test_pipeline_with_mock_llm(self):
-        """Pipeline completo com LLM mockado produz dados estruturados."""
+    def test_gap_new_query_feeds_search(self):
+        """Nova query do gap_analysis e usada pelo search_sources no proximo ciclo."""
         mock_llm = MagicMock(spec=LLMProvider)
 
-        extract_response = {
-            "sources": [
-                {
-                    "url": "https://example.com/bdo",
-                    "relevant": True,
-                    "relevance_reason": "Site da empresa",
-                    "claims": [
-                        {
-                            "claim": "BDO Brasil usa TOTVS Protheus",
-                            "claim_type": "fact",
-                            "category": "stack",
-                            "confidence": "alta",
-                            "context": "Trecho do site",
-                        }
-                    ],
-                }
-            ]
-        }
-
-        analyze_response = {
-            "tech_signals": [
-                {
-                    "technology": "TOTVS Protheus",
-                    "purpose": "ERP contabil",
-                    "evidence": "Confirmado por fonte publica",
-                    "confidence": "alta",
-                    "claim_type": "fact",
-                    "source_url": "https://example.com/bdo",
-                }
-            ],
-            "stakeholders": [
-                {
-                    "name": "Diretor de TI",
-                    "role": "Decisor tecnico",
-                    "influence": "Alta",
-                    "evidence": "Evidencia publica",
+        extract_resp = {
+            "sources": [{
+                "url": "https://ex.com/a",
+                "relevant": True,
+                "relevance_reason": "ok",
+                "claims": [{
+                    "claim": "Empresa contabil",
                     "claim_type": "inference",
-                }
-            ],
-            "opportunities": [],
-            "commercial_risks": ["Concorrente estabelecido"],
+                    "category": "perfil",
+                    "confidence": "media",
+                    "context": "ctx",
+                }],
+            }]
         }
 
-        gap_response = {
-            "gaps": [
-                {
-                    "description": "Decisor economico nao identificado",
-                    "criticality": "alta",
-                    "discovery_action": "Perguntar na Discovery call",
-                    "new_query": "",
-                    "priority_for_next_interaction": 1,
-                }
-            ],
-            "rapport_points": [
-                {
-                    "topic": "Transformacao digital",
-                    "context": "Setor contabel em migracao",
-                    "suggested_question": "Como esta a digitalizacao?",
-                }
-            ],
-            "discovery_questions": ["Quem decide compras de TI?"],
-            "suggested_next_actions": ["Agendar call"],
+        analyze_resp = {
+            "tech_signals": [],
+            "stakeholders": [],
+            "opportunities": [],
+            "commercial_risks": [],
+        }
+
+        gap_resp = {
+            "gaps": [{
+                "description": "ERP nao confirmado",
+                "criticality": "alta",
+                "discovery_action": "Pesquisar vagas",
+                "new_query": "Empresa vagas licitacao ERP",
+                "priority_for_next_interaction": 1,
+            }],
+            "rapport_points": [],
+            "discovery_questions": [],
+            "suggested_next_actions": [],
+        }
+
+        gap_resp_final = {
+            "gaps": [],
+            "rapport_points": [],
+            "discovery_questions": [],
+            "suggested_next_actions": [],
         }
 
         mock_llm.chat.side_effect = [
-            LLMResponse(text=json.dumps(extract_response)),
-            LLMResponse(text=json.dumps(analyze_response)),
-            LLMResponse(text=json.dumps(gap_response)),
+            LLMResponse(text=json.dumps(extract_resp)),
+            LLMResponse(text=json.dumps(analyze_resp)),
+            LLMResponse(text=json.dumps(gap_resp)),
+            LLMResponse(text=json.dumps(extract_resp)),
+            LLMResponse(text=json.dumps(analyze_resp)),
+            LLMResponse(text=json.dumps(gap_resp_final)),
         ]
 
+        graph = build_graph(provider=MockSearchProvider(results_per_query=2), llm=mock_llm)
+
         state = AccountIntelligenceState(
-            target_company="BDO Brasil",
-            sources=[
-                Source(
-                    url="https://example.com/bdo",
-                    title="BDO Brasil",
-                    snippet="Site institucional",
-                ),
-            ],
-            max_loops=1,
+            target_company="Test Loop",
+            max_loops=2,
         )
 
-        r1 = extract_evidence(state, llm=mock_llm)
-        state.evidence = r1["evidence"]
-        state.llm_requests_count = r1.get("llm_requests_count", 0)
-        state.llm_cost_dollars = r1.get("llm_cost_dollars", 0)
+        result = graph.invoke(state)
 
-        r2 = analyze_account(state, llm=mock_llm)
-        state.tech_signals = r2["tech_signals"]
-        state.stakeholders = r2["stakeholders"]
-        state.opportunities = r2["opportunities"]
-        state.commercial_risks = r2.get("commercial_risks", [])
-        state.llm_requests_count = r2.get("llm_requests_count", state.llm_requests_count)
-        state.llm_cost_dollars = r2.get("llm_cost_dollars", state.llm_cost_dollars)
+        assert result["loop_counter"] == 2
+        assert "Empresa vagas licitacao ERP" in result["research_queries"]
 
-        r3 = gap_analysis(state, llm=mock_llm)
-        state.gaps = r3["gaps"]
-        state.rapport_points = r3["rapport_points"]
-        state.discovery_questions = r3["discovery_questions"]
-        state.suggested_next_actions = r3["suggested_next_actions"]
+    def test_no_gap_stops_loop(self):
+        """Sem nova query pesquisavel, grafo finaliza mesmo com loops disponiveis."""
+        mock_llm = MagicMock(spec=LLMProvider)
 
-        assert len(state.evidence) == 1
-        assert state.evidence[0].claim_type == "fact"
-        assert len(state.tech_signals) == 1
-        assert state.tech_signals[0].technology == "TOTVS Protheus"
-        assert len(state.stakeholders) == 1
-        assert len(state.gaps) == 1
-        assert state.gaps[0].criticality == "alta"
-        assert len(state.rapport_points) == 1
-        assert state.llm_requests_count >= 2
+        extract_resp = {
+            "sources": [{
+                "url": "https://ex.com/a",
+                "relevant": True,
+                "relevance_reason": "ok",
+                "claims": [{
+                    "claim": "Claim",
+                    "claim_type": "fact",
+                    "category": "perfil",
+                    "confidence": "alta",
+                    "context": "ctx",
+                }],
+            }]
+        }
+
+        analyze_resp = {
+            "tech_signals": [],
+            "stakeholders": [],
+            "opportunities": [],
+            "commercial_risks": [],
+        }
+
+        gap_resp = {
+            "gaps": [{
+                "description": "Decisor nao identificado",
+                "criticality": "alta",
+                "discovery_action": "Perguntar na call",
+                "new_query": "",
+                "priority_for_next_interaction": 1,
+            }],
+            "rapport_points": [],
+            "discovery_questions": [],
+            "suggested_next_actions": [],
+        }
+
+        mock_llm.chat.side_effect = [
+            LLMResponse(text=json.dumps(extract_resp)),
+            LLMResponse(text=json.dumps(analyze_resp)),
+            LLMResponse(text=json.dumps(gap_resp)),
+        ]
+
+        graph = build_graph(provider=MockSearchProvider(), llm=mock_llm)
+
+        state = AccountIntelligenceState(
+            target_company="No Gap Loop",
+            max_loops=3,
+        )
+
+        result = graph.invoke(state)
+
+        assert result["loop_counter"] == 1
+        assert result["has_new_researchable_gap"] is False
+
+    def test_two_cycles_no_duplicate_evidence(self):
+        """Dois ciclos nao geram evidencias duplicadas mesmos com URLs diferentes."""
+        mock_llm = MagicMock(spec=LLMProvider)
+
+        extract_resp_1 = {
+            "sources": [{
+                "url": "https://ex.com/a",
+                "relevant": True,
+                "relevance_reason": "ok",
+                "claims": [{
+                    "claim": "Claim unico",
+                    "claim_type": "fact",
+                    "category": "stack",
+                    "confidence": "alta",
+                    "context": "ctx",
+                }],
+            }]
+        }
+
+        extract_resp_2 = {
+            "sources": [{
+                "url": "https://ex.com/a",
+                "relevant": True,
+                "relevance_reason": "ok",
+                "claims": [{
+                    "claim": "Claim unico",
+                    "claim_type": "fact",
+                    "category": "stack",
+                    "confidence": "alta",
+                    "context": "ctx2",
+                }],
+            }]
+        }
+
+        analyze_resp = {
+            "tech_signals": [],
+            "stakeholders": [],
+            "opportunities": [],
+            "commercial_risks": [],
+        }
+
+        gap_resp_1 = {
+            "gaps": [{
+                "description": "Gap",
+                "criticality": "alta",
+                "discovery_action": "Pesquisar",
+                "new_query": "Teste licitacao vaga",
+                "priority_for_next_interaction": 1,
+            }],
+            "rapport_points": [],
+            "discovery_questions": [],
+            "suggested_next_actions": [],
+        }
+
+        gap_resp_2 = {
+            "gaps": [],
+            "rapport_points": [],
+            "discovery_questions": [],
+            "suggested_next_actions": [],
+        }
+
+        mock_llm.chat.side_effect = [
+            LLMResponse(text=json.dumps(extract_resp_1)),
+            LLMResponse(text=json.dumps(analyze_resp)),
+            LLMResponse(text=json.dumps(gap_resp_1)),
+            LLMResponse(text=json.dumps(extract_resp_2)),
+            LLMResponse(text=json.dumps(analyze_resp)),
+            LLMResponse(text=json.dumps(gap_resp_2)),
+        ]
+
+        graph = build_graph(provider=MockSearchProvider(results_per_query=2), llm=mock_llm)
+
+        state = AccountIntelligenceState(
+            target_company="Dedup Test",
+            max_loops=2,
+        )
+
+        result = graph.invoke(state)
+
+        claim_count = sum(
+            1 for e in result["evidence"] if e.claim == "Claim unico"
+        )
+        assert claim_count == 1

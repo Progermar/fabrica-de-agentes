@@ -1,5 +1,7 @@
 """Testes do Account Intelligence Agent."""
 
+import json
+
 from fabrica_de_agentes.graph import build_graph
 from fabrica_de_agentes.search.mock_provider import MockSearchProvider
 from fabrica_de_agentes.state import AccountIntelligenceState
@@ -34,8 +36,56 @@ def test_graph_executes_full_flow():
 
 
 def test_graph_with_two_loops():
-    """Verifica que o loop de pesquisa funciona corretamente."""
-    graph = build_graph()
+    """Verifica que o loop de pesquisa funciona com gap_analysis retornando nova query."""
+    from unittest.mock import MagicMock
+
+    from fabrica_de_agentes.llm.base import LLMProvider, LLMResponse
+
+    mock_llm = MagicMock(spec=LLMProvider)
+
+    extract_resp = {
+        "sources": [{
+            "url": "https://ex.com/a",
+            "relevant": True,
+            "relevance_reason": "ok",
+            "claims": [],
+        }]
+    }
+    analyze_resp = {
+        "tech_signals": [],
+        "stakeholders": [],
+        "opportunities": [],
+        "commercial_risks": [],
+    }
+    gap_resp_1 = {
+        "gaps": [{
+            "description": "Gap",
+            "criticality": "alta",
+            "discovery_action": "Pesquisar",
+            "new_query": "Tech Solutions licitacao ERP vaga",
+            "priority_for_next_interaction": 1,
+        }],
+        "rapport_points": [],
+        "discovery_questions": [],
+        "suggested_next_actions": [],
+    }
+    gap_resp_2 = {
+        "gaps": [],
+        "rapport_points": [],
+        "discovery_questions": [],
+        "suggested_next_actions": [],
+    }
+
+    mock_llm.chat.side_effect = [
+        LLMResponse(text=json.dumps(extract_resp)),
+        LLMResponse(text=json.dumps(analyze_resp)),
+        LLMResponse(text=json.dumps(gap_resp_1)),
+        LLMResponse(text=json.dumps(extract_resp)),
+        LLMResponse(text=json.dumps(analyze_resp)),
+        LLMResponse(text=json.dumps(gap_resp_2)),
+    ]
+
+    graph = build_graph(provider=MockSearchProvider(results_per_query=2), llm=mock_llm)
 
     initial_state = AccountIntelligenceState(
         target_company="Tech Solutions S.A.",
