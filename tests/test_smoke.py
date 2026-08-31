@@ -28,10 +28,9 @@ def test_graph_executes_full_flow():
     assert "Empresa Mock Ltda" in result["briefing_final"]
 
     assert len(result["sources"]) > 0, "Nenhuma fonte coletada"
-    assert len(result["evidence"]) > 0, "Nenhuma evidencia extraida"
-    assert len(result["stakeholders"]) > 0, "Nenhum stakeholder identificado"
-    assert len(result["gaps"]) > 0, "Nenhum gap listado"
-    assert len(result["rapport_points"]) > 0, "Nenhum ponto de rapport"
+
+    assert len(result["gaps"]) == 0, "Gaps devem estar vazios sem LLM"
+    assert len(result["stakeholders"]) == 0, "Stakeholders devem estar vazios sem LLM"
 
 
 def test_graph_with_two_loops():
@@ -65,6 +64,8 @@ def test_state_initialization():
     assert state.briefing_final == ""
     assert state.search_requests_count == 0
     assert state.search_cost_dollars == 0.0
+    assert state.llm_requests_count == 0
+    assert state.llm_cost_dollars == 0.0
 
 
 def test_briefing_structure():
@@ -81,17 +82,19 @@ def test_briefing_structure():
 
     expected_sections = [
         "PERFIL DA CONTA",
-        "STAKEHOLDER INTELLIGENCE (MOCKADO)",
-        "TECHNOLOGY / STACK DISCOVERY (MOCKADO)",
-        "OPPORTUNITY DISCOVERY (MOCKADO)",
-        "RAPPORT E ESTRATEGIA COMERCIAL (MOCKADO)",
-        "GAP ANALYSIS (MOCKADO)",
-        "FONTES E RASTREABILIDADE (DADOS REAIS - EXA)",
-        "AVISO: DADOS PARCIALMENTE MOCKADOS",
+        "STAKEHOLDER INTELLIGENCE",
+        "TECHNOLOGY / STACK DISCOVERY",
+        "OPPORTUNITY DISCOVERY",
+        "RAPPORT E ESTRATEGIA COMERCIAL",
+        "GAP ANALYSIS",
+        "FONTES E RASTREABILIDADE",
     ]
 
     for section in expected_sections:
         assert section in briefing, f"Secao '{section}' nao encontrada no briefing"
+
+    assert "Chamadas de LLM realizadas" in briefing
+    assert "Evidencias coletadas" in briefing
 
 
 def test_graph_with_mock_provider_explicit():
@@ -127,36 +130,35 @@ def test_briefing_shows_search_metrics():
     assert "Requisicoes de busca realizadas" in briefing
 
 
-def test_briefing_disclaimer_mock_data():
-    """Verifica que o briefing contem aviso explicito sobre dados mockados."""
+def test_briefing_no_mock_disclaimer():
+    """Verifica que o briefing NAO contem aviso de dados mockados (V1-03)."""
     graph = build_graph(provider=MockSearchProvider())
 
     initial_state = AccountIntelligenceState(
-        target_company="Disclaimer Test",
+        target_company="No Mock Test",
         max_loops=1,
     )
 
     result = graph.invoke(initial_state)
     briefing = result["briefing_final"]
 
-    assert "AVISO: DADOS PARCIALMENTE MOCKADOS" in briefing
-    assert "somente a secao de fontes/busca (exa) contem dados reais" in briefing.lower()
+    assert "MOCKADO" not in briefing
+    assert "DADOS PARCIALMENTE MOCKADOS" not in briefing
 
 
-def test_configurable_limits_respected():
-    """Verifica que max_queries_per_cycle e max_results_per_query sao respeitados."""
-    from fabrica_de_agentes.nodes.search_sources import search_sources
+def test_briefing_shows_llm_metrics():
+    """Verifica que o briefing mostra metricas de LLM."""
+    graph = build_graph(provider=MockSearchProvider())
 
-    provider = MockSearchProvider(results_per_query=2)
-    state = AccountIntelligenceState(
-        target_company="Limits Test",
-        research_queries=["q1", "q2", "q3", "q4", "q5"],
-        max_results_per_query=2,
-        max_queries_per_cycle=2,
+    initial_state = AccountIntelligenceState(
+        target_company="LLM Metrics",
+        max_loops=1,
     )
 
-    result = search_sources(state, provider=provider)
+    result = graph.invoke(initial_state)
+    briefing = result["briefing_final"]
 
-    # Apenas 2 queries executadas (max_queries_per_cycle=2), 2 resultados cada
-    assert len(result["sources"]) == 4
-    assert result["search_requests_count"] == 2
+    assert "Chamadas de LLM realizadas" in briefing
+    assert "Fatos confirmados" in briefing
+    assert "Inferencias" in briefing
+    assert "Hipoteses" in briefing

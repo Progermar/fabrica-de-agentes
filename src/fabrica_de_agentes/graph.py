@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from langgraph.graph import END, StateGraph
 
+from fabrica_de_agentes.llm.base import LLMProvider
 from fabrica_de_agentes.nodes import (
     analyze_account,
     analyze_target,
@@ -37,11 +38,24 @@ def _make_search_sources_node(provider: SearchProvider | None = None):
     return _node
 
 
-def build_graph(provider: SearchProvider | None = None):
+def _make_llm_node(llm: LLMProvider | None, base_fn):
+    """Cria um wrapper de no LLM com provider injetado."""
+
+    def _node(state: AccountIntelligenceState) -> dict:
+        return base_fn(state, llm=llm)
+
+    return _node
+
+
+def build_graph(
+    provider: SearchProvider | None = None,
+    llm: LLMProvider | None = None,
+):
     """Constroi e compila o grafo de Account Intelligence.
 
     Args:
-        provider: Provedor de busca a ser usado. Se None, usa MockSearchProvider.
+        provider: Provedor de busca. Se None, usa MockSearchProvider.
+        llm: Provedor de LLM. Se None, nos de analise retornam vazio.
 
     Fluxo:
         start -> analyze_target -> plan_research -> search_sources
@@ -51,14 +65,17 @@ def build_graph(provider: SearchProvider | None = None):
     graph_builder = StateGraph(AccountIntelligenceState)
 
     search_node = _make_search_sources_node(provider)
+    evidence_node = _make_llm_node(llm, extract_evidence)
+    account_node = _make_llm_node(llm, analyze_account)
+    gap_node = _make_llm_node(llm, gap_analysis)
 
     # Adiciona nos
     graph_builder.add_node("analyze_target", analyze_target)
     graph_builder.add_node("plan_research", plan_research)
     graph_builder.add_node("search_sources", search_node)
-    graph_builder.add_node("extract_evidence", extract_evidence)
-    graph_builder.add_node("analyze_account", analyze_account)
-    graph_builder.add_node("gap_analysis", gap_analysis)
+    graph_builder.add_node("extract_evidence", evidence_node)
+    graph_builder.add_node("analyze_account", account_node)
+    graph_builder.add_node("gap_analysis", gap_node)
     graph_builder.add_node("build_briefing", build_briefing)
 
     # Ponto de entrada

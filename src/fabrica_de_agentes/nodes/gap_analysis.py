@@ -1,77 +1,179 @@
 """No 6: Gap Analysis - Analise de lacunas de informacao."""
 
+from __future__ import annotations
+
+import json
+
+from fabrica_de_agentes.llm.base import LLMProvider
 from fabrica_de_agentes.state import AccountIntelligenceState, Gap, RapportPoint
 
+SYSTEM_PROMPT = """\
+Voce e um analista de inteligencia comercial. Analise as evidencias e gaps \
+identificados sobre uma empresa-alvo e produza:
 
-def gap_analysis(state: AccountIntelligenceState) -> dict:
-    """Identifica gaps de informacao e pontos de rapport.
+1. GAPS de informacao com prioridade:
+   - sistema/ERP principal nao confirmado
+   - gestao da carteira nao identificada
+   - fornecedor dominante desconhecido
+   - decisor economico nao identificado
+   - poder de veto nao identificado
+   - cadeia de aprovacao desconhecida
 
-    Na V1 real, este no usaria LLM para avaliar cobertura da pesquisa
-    e decidir se novas iteracoes sao necessarias.
-    Nesta versao esqueleto, gera gaps e rapport mockados.
+   Cada gap deve indicar:
+   - description: o que falta descobrir
+   - criticality: "alta", "media", "baixa"
+   - discovery_action: como descobrir comercialmente
+   - new_query: query sugerida para nova pesquisa (se pesquisavel)
+   - priority_for_next_interaction: 1-5
+
+2. PONTOS DE RAPPORT:
+   - topic: tema de conexao
+   - context: por que e relevante
+   - suggested_question: pergunta sugerida
+
+3. PERGUNTAS DE DESCOBERTA:
+   - Lista de perguntas para Discovery call
+
+4. ACOES SUGERIDAS:
+   - Proximos passos concretos
+
+Retorne APENAS JSON valido no formato:
+{
+  "gaps": [
+    {
+      "description": "o que falta",
+      "criticality": "alta|media|baixa",
+      "discovery_action": "como descobrir",
+      "new_query": "query para pesquisa (ou vazio)",
+      "priority_for_next_interaction": 1
+    }
+  ],
+  "rapport_points": [
+    {
+      "topic": "tema",
+      "context": "contexto",
+      "suggested_question": "pergunta"
+    }
+  ],
+  "discovery_questions": ["pergunta 1", "pergunta 2"],
+  "suggested_next_actions": ["acao 1", "acao 2"]
+}
+"""
+
+
+def gap_analysis(
+    state: AccountIntelligenceState,
+    llm: LLMProvider | None = None,
+) -> dict:
+    """Identifica gaps de informacao e decide se novas pesquisas sao necessarias.
+
+    Se llm for None, retorna gaps e rapport vazios (modo offline/teste).
     """
-    gaps = [
-        Gap(
-            description="Identidade do decisor final de TI nao confirmada",
-            criticality="alta",
-            discovery_action="Perguntar diretamente no primeiro contato",
-            priority_for_next_interaction=1,
-        ),
-        Gap(
-            description="Stack tecnologica real nao verificada",
-            criticality="alta",
-            discovery_action="Pesquisar licitacoes ou revealacoes publicas",
-            priority_for_next_interaction=2,
-        ),
-        Gap(
-            description="Budget anual para TI desconhecido",
-            criticality="media",
-            discovery_action="Indag duranteDiscovery call",
-            priority_for_next_interaction=3,
-        ),
-    ]
+    if llm is None:
+        return {
+            "gaps": [],
+            "rapport_points": [],
+            "discovery_questions": [],
+            "commercial_risks": [],
+            "suggested_next_actions": [],
+            "llm_requests_count": state.llm_requests_count,
+        }
 
-    rapport_points = [
-        RapportPoint(
-            topic="Segmento contabil",
-            context="ComumInterest em eficiencia operacional",
-            suggested_question=(
-                "Como voces estao lidando com a demanda crescente de "
-                "automatizacao dos processos contabeis?"
-            ),
-        ),
-        RapportPoint(
-            topic="Transformacao digital",
-            context="Muitos escritorios estao em fase de migracao",
-            suggested_question=(
-                "Voces ja consideraram usar IA para automatizar "
-                "tarefas repetitivas?"
-            ),
-        ),
-    ]
+    company = state.target_company
+    evidence_list = state.evidence
+    tech_signals = state.tech_signals
+    stakeholders = state.stakeholders
+    existing_urls = set(state.all_source_urls)
 
-    discovery_questions = [
-        "Quem e o principal responsable por decisoes de TI na empresa?",
-        "Quais sistemas voces usam atualmente para gestao contabil?",
-        "Qual e o maior gargalo operacional que voces enfrentam hoje?",
-    ]
+    evidence_text = ""
+    for i, ev in enumerate(evidence_list, 1):
+        evidence_text += (
+            f"{i}. [{ev.claim_type.upper()}] {ev.claim}\n"
+            f"   Fonte: {ev.source_url} | Cat: {ev.category}\n\n"
+        )
 
-    commercial_risks = [
-        "Possivel resistencia a mudanca na equipe",
-        "Budget limitado para novas ferramentas",
-        "Concorrentes com solucoes ja estabelecidas",
-    ]
+    tech_text = ""
+    for ts in tech_signals:
+        tech_text += (
+            f"- {ts.technology} [{ts.confidence}]: {ts.evidence}\n"
+        )
 
-    suggested_next_actions = [
-        "Agendar Discovery call com diretor de TI",
-        "Preparar demo personalizada para o segmento contabil",
-        "Enviar material educativo sobre automacao com IA",
-    ]
+    stakeholder_text = ""
+    for sh in stakeholders:
+        stakeholder_text += (
+            f"- {sh.name} ({sh.role}): {sh.influence}\n"
+        )
+
+    prompt = f"""\
+Empresa-alvo: {company}
+
+Evidencias coletadas:
+{evidence_text or 'Nenhuma'}
+
+Stack tecnologica identificada:
+{tech_text or 'Nenhuma'}
+
+Stakeholders identificados:
+{stakeholder_text or 'Nenhum'}
+
+URLs ja pesquisadas: {len(existing_urls)}
+
+Analise os gaps de informacao e produza a analise estruturada.
+Para cada gap pesquisavel, sugira uma query de pesquisa alternativa \
+(diferente das ja tentadas).
+Retorne APENAS JSON valido conforme instrucoes do system prompt."""
+
+    response = llm.chat(prompt, system=SYSTEM_PROMPT)
+
+    gaps: list[Gap] = []
+    rapport_points: list[RapportPoint] = []
+    discovery_questions: list[str] = []
+    suggested_next_actions: list[str] = []
+
+    try:
+        data = json.loads(response.text)
+
+        for g in data.get("gaps", []):
+            gaps.append(
+                Gap(
+                    description=g.get("description", ""),
+                    criticality=g.get("criticality", "media"),
+                    discovery_action=g.get("discovery_action", ""),
+                    priority_for_next_interaction=g.get(
+                        "priority_for_next_interaction", 3
+                    ),
+                )
+            )
+
+        for rp in data.get("rapport_points", []):
+            rapport_points.append(
+                RapportPoint(
+                    topic=rp.get("topic", ""),
+                    context=rp.get("context", ""),
+                    suggested_question=rp.get("suggested_question", ""),
+                )
+            )
+
+        discovery_questions = data.get("discovery_questions", [])
+        suggested_next_actions = data.get("suggested_next_actions", [])
+
+    except (json.JSONDecodeError, KeyError):
+        return {
+            "gaps": [],
+            "rapport_points": [],
+            "discovery_questions": [],
+            "commercial_risks": [],
+            "suggested_next_actions": [],
+            "llm_requests_count": state.llm_requests_count + 1,
+            "llm_cost_dollars": state.llm_cost_dollars + response.cost_dollars,
+        }
 
     return {
         "gaps": gaps,
         "rapport_points": rapport_points,
         "discovery_questions": discovery_questions,
-        "commercial_risks": commercial_risks,
+        "commercial_risks": state.commercial_risks,
         "suggested_next_actions": suggested_next_actions,
+        "llm_requests_count": state.llm_requests_count + 1,
+        "llm_cost_dollars": state.llm_cost_dollars + response.cost_dollars,
     }

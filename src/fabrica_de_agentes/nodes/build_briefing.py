@@ -23,12 +23,7 @@ def _format_list(items: list, label: str) -> str:
 def build_briefing(state: AccountIntelligenceState) -> dict:
     """Constroi o briefing final de inteligencia da conta.
 
-    Na V1 real, este no usaria LLM para sintetizar tudo em documento coeso.
-    Nesta versao esqueleto, monta briefing estruturado com dados mockados.
-
-    IMPORTANTE (V1-02): Somente a descoberta de fontes via Exa e real.
-    Todas as secoes de analise (stakeholders, stack, oportunidades, rapport,
-    gaps) contem dados mockados e NAO devem ser usados como briefing real.
+    Monta briefing estruturado com dados reais de busca e analise LLM.
     """
     company = state.target_company
 
@@ -40,45 +35,33 @@ def build_briefing(state: AccountIntelligenceState) -> dict:
     sections.append(f"Empresa-alvo: {company}")
     sections.append(f"{'='*60}\n")
 
-    # AVISO CRITICO
-    sections.append("!!! AVISO: DADOS PARCIALMENTE MOCKADOS !!!")
-    sections.append(
-        "Somente a secao de Fontes/Busca (Exa) contem dados reais."
-    )
-    sections.append(
-        "As secoes abaixo (Perfil, Stakeholders, Stack, Oportunidades,"
-    )
-    sections.append(
-        "  Rapport, Gaps) sao DADOS MOCKADOS para fins de demonstracao."
-    )
-    sections.append(
-        "  NAO utilize este briefing como insumo comercial real."
-    )
-    sections.append(
-        "  Aguarde a integracao da camada de inteligencia (LLM).\n"
-    )
-
     # 1. Perfil da Conta
     sections.append("1. PERFIL DA CONTA")
     sections.append(f"  - Empresa: {company}")
-    sections.append("  - Atuacao: Servicos contabeis (MOCKADO)")
-    sections.append("  - Porte: Medio/Grande (MOCKADO)")
-    sections.append("  - Localizacao: Brasil (MOCKADO)\n")
+
+    relevant_sources = [s for s in state.sources if s.relevant is True]
+    if relevant_sources:
+        sections.append(f"  - Fontes relevantes encontradas: {len(relevant_sources)}")
+        for src in relevant_sources[:5]:
+            sections.append(f"    * {src.title} ({src.url})")
+    else:
+        sections.append("  - Perfil detalhado nao confirmado por fontes publicas")
+    sections.append("")
 
     # 2. Stakeholder Intelligence
-    sections.append("2. STAKEHOLDER INTELLIGENCE (MOCKADO)")
+    sections.append("2. STAKEHOLDER INTELLIGENCE")
     sections.append(_format_list(state.stakeholders, "stakeholders"))
 
     # 3. Technology / Stack Discovery
-    sections.append("3. TECHNOLOGY / STACK DISCOVERY (MOCKADO)")
+    sections.append("3. TECHNOLOGY / STACK DISCOVERY")
     sections.append(_format_list(state.tech_signals, "stack"))
 
     # 4. Opportunity Discovery
-    sections.append("4. OPPORTUNITY DISCOVERY (MOCKADO)")
+    sections.append("4. OPPORTUNITY DISCOVERY")
     sections.append(_format_list(state.opportunities, "oportunidades"))
 
     # 5. Rapport e Estrategia Comercial
-    sections.append("5. RAPPORT E ESTRATEGIA COMERCIAL (MOCKADO)")
+    sections.append("5. RAPPORT E ESTRATEGIA COMERCIAL")
     sections.append("  Pontos de rapport:")
     sections.append(_format_list(state.rapport_points, "rapport"))
     sections.append("  Perguntas de descoberta:")
@@ -89,11 +72,11 @@ def build_briefing(state: AccountIntelligenceState) -> dict:
     sections.append(_format_list(state.suggested_next_actions, "acoes"))
 
     # 6. GAP Analysis
-    sections.append("6. GAP ANALYSIS (MOCKADO)")
+    sections.append("6. GAP ANALYSIS")
     sections.append(_format_list(state.gaps, "gaps"))
 
-    # 7. Fontes e Rastreabilidade (DADOS REAIS)
-    sections.append("7. FONTES E RASTREABILIDADE (DADOS REAIS - EXA)")
+    # 7. Fontes e Rastreabilidade
+    sections.append("7. FONTES E RASTREABILIDADE")
     sections.append(f"  Fontes consultadas: {len(state.all_source_urls)}")
     for url in state.all_source_urls:
         sections.append(f"    - {url}")
@@ -102,12 +85,25 @@ def build_briefing(state: AccountIntelligenceState) -> dict:
         sections.append(
             f"  Custo estimado das buscas: ${state.search_cost_dollars:.4f}"
         )
+    sections.append(f"\n  Chamadas de LLM realizadas: {state.llm_requests_count}")
+    if state.llm_cost_dollars > 0:
+        sections.append(
+            f"  Custo estimado da analise LLM: ${state.llm_cost_dollars:.4f}"
+        )
     sections.append(f"\n  Evidencias coletadas: {len(state.evidence)}")
+
+    facts = [e for e in state.evidence if e.claim_type == "fact"]
+    inferences = [e for e in state.evidence if e.claim_type == "inference"]
+    hypotheses = [e for e in state.evidence if e.claim_type == "hypothesis"]
+    sections.append(f"    - Fatos confirmados: {len(facts)}")
+    sections.append(f"    - Inferencias: {len(inferences)}")
+    sections.append(f"    - Hipoteses: {len(hypotheses)}")
+
     sections.append(
-        "  Nota: Fontes sao resultados de busca web, nao evidencias confirmadas."
+        "\n  Nota: Fontes devem ser validadas pelo vendedor antes de uso comercial."
     )
     sections.append(
-        "  Cada fonte deve ser validada pelo vendedor antes de uso comercial.\n"
+        "  Distincao entre fato, inferencia e hipotese indicada em cada evidencia.\n"
     )
 
     sections.append(f"{'='*60}")

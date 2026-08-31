@@ -17,6 +17,8 @@ class Source:
     published_date: str | None = None
     score: float | None = None
     highlights: list[str] = field(default_factory=list)
+    relevant: bool | None = None
+    relevance_reason: str = ""
 
 
 @dataclass
@@ -25,8 +27,11 @@ class Evidence:
 
     claim: str
     source_url: str
+    source_title: str = ""
     confidence: Literal["alta", "media", "baixa"] = "media"
     category: str = ""
+    claim_type: Literal["fact", "inference", "hypothesis", "gap"] = "inference"
+    context: str = ""
 
 
 @dataclass
@@ -122,3 +127,5 @@ class AccountIntelligenceState:
     all_source_urls: list[str] = field(default_factory=list)
     search_requests_count: int = 0
     search_cost_dollars: float = 0.0
+    llm_requests_count: int = 0
+    llm_cost_dollars: float = 0.0
