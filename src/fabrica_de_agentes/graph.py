@@ -1,5 +1,7 @@
 """Montagem do grafo LangGraph para Account Intelligence Agent."""
 
+from __future__ import annotations
+
 from langgraph.graph import END, StateGraph
 
 from fabrica_de_agentes.nodes import (
@@ -9,8 +11,9 @@ from fabrica_de_agentes.nodes import (
     extract_evidence,
     gap_analysis,
     plan_research,
-    search_sources,
 )
+from fabrica_de_agentes.nodes.search_sources import search_sources
+from fabrica_de_agentes.search.base import SearchProvider
 from fabrica_de_agentes.state import AccountIntelligenceState
 
 
@@ -25,8 +28,20 @@ def _route_after_gap(state: AccountIntelligenceState) -> str:
     return "build_briefing"
 
 
-def build_graph():
+def _make_search_sources_node(provider: SearchProvider | None = None):
+    """Cria um wrapper do search_sources com provider injetado."""
+
+    def _node(state: AccountIntelligenceState) -> dict:
+        return search_sources(state, provider=provider)
+
+    return _node
+
+
+def build_graph(provider: SearchProvider | None = None):
     """Constroi e compila o grafo de Account Intelligence.
+
+    Args:
+        provider: Provedor de busca a ser usado. Se None, usa MockSearchProvider.
 
     Fluxo:
         start -> analyze_target -> plan_research -> search_sources
@@ -35,10 +50,12 @@ def build_graph():
     """
     graph_builder = StateGraph(AccountIntelligenceState)
 
+    search_node = _make_search_sources_node(provider)
+
     # Adiciona nos
     graph_builder.add_node("analyze_target", analyze_target)
     graph_builder.add_node("plan_research", plan_research)
-    graph_builder.add_node("search_sources", search_sources)
+    graph_builder.add_node("search_sources", search_node)
     graph_builder.add_node("extract_evidence", extract_evidence)
     graph_builder.add_node("analyze_account", analyze_account)
     graph_builder.add_node("gap_analysis", gap_analysis)
@@ -70,5 +87,5 @@ def build_graph():
     return graph_builder.compile()
 
 
-# Instancia compilada do grafo (pode ser importada diretamente)
+# Instancia compilada do grafo com mock (padrao para testes offline)
 account_intelligence_graph = build_graph()

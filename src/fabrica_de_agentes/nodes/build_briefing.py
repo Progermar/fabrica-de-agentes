@@ -75,9 +75,18 @@ def build_briefing(state: AccountIntelligenceState) -> dict:
     sections.append(f"  Fontes consultadas: {len(state.all_source_urls)}")
     for url in state.all_source_urls:
         sections.append(f"    - {url}")
+    sections.append(f"\n  Requisicoes de busca realizadas: {state.search_requests_count}")
+    if state.search_cost_dollars > 0:
+        sections.append(
+            f"  Custo estimado das buscas: ${state.search_cost_dollars:.4f}"
+        )
     sections.append(f"\n  Evidencias coletadas: {len(state.evidence)}")
-    sections.append("  Nota: Todos os dados acima sao MOCKADOS para validacao do fluxo.")
-    sections.append("  Em producao, serao conectados a LLMs e APIs de busca reais.\n")
+    sections.append(
+        "  Nota: Fontes sao resultados de busca web, nao evidencias confirmadas."
+    )
+    sections.append(
+        "  Cada fonte deve ser validada pelo vendedor antes de uso comercial.\n"
+    )
 
     sections.append(f"{'='*60}")
     sections.append("FIM DO BRIEFING")
