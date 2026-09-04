@@ -17,8 +17,8 @@
 | Max Loops | 1 |
 | Custo Exa | $0.0210 |
 | Custo LLM | $0 |
-| Tokens LLM (input) | 694 |
-| Tokens LLM (output) | 11 |
+| Tokens LLM (input) | não capturado |
+| Tokens LLM (output) | não capturado |
 
 ---
 
@@ -32,7 +32,7 @@
 | Fatos confirmados | 42 |
 | Inferências | 0 |
 | Hipóteses | 0 |
-| Gaps de informação | 0 |
+| Gaps de informação | 6 |
 | Chamadas LLM | 3 |
 
 ---

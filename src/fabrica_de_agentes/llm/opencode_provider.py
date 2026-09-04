@@ -16,8 +16,8 @@ DEFAULT_AGENT = "account-intelligence"
 class OpenCodeProvider(LLMProvider):
     """Provedor de LLM conectado ao servidor OpenCode via HTTP.
 
-    Requer que 'opencode serve' esteja rodando e a variavel de ambiente
-    OPENCODE_SERVER_PASSWORD esteja configurada.
+    Requer que 'opencode serve' esteja rodando.
+    Autenticacao e opcional — o servidor pode ser unsecured.
 
     Valida que o agente configurado existe no servidor via GET /agent
     antes do primeiro chat.
@@ -25,10 +25,11 @@ class OpenCodeProvider(LLMProvider):
     Args:
         base_url: URL base do servidor OpenCode.
         username: Usuario para autenticacao HTTP basic.
-        password: Senha para autenticacao HTTP basic.
+        password: Senha para autenticacao HTTP basic (opcional).
         timeout: Timeout em segundos para chamadas HTTP.
         agent: ID do agente a ser usado (default: account-intelligence).
         validate_agent: Se True, valida que o agente existe no servidor.
+        model: Modelo no formato providerID/modelID (ex: openai/gpt-5.4-mini).
     """
 
     def __init__(

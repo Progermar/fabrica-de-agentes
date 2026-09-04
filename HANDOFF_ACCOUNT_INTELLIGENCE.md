@@ -86,8 +86,7 @@ O provider `openai` está conectado via OAuth no OpenCode desktop. O `opencode s
 
 ### Custo LLM
 
-- **Custo reportado:** $0 (modelos OpenAI via OAuth no plano gratuito do OpenCode)
-- **Tokens observados:** ~694 input, ~11 output por chamada simples
+- **Custo reportado:** A resposta do OpenCode reportou cost = $0 nas execuções validadas via OpenAI OAuth. Isso é uma métrica reportada pelo OpenCode e não deve ser interpretado aqui como garantia sobre política externa de cobrança.
 
 ### Tratamento de Erros
 
@@ -171,10 +170,10 @@ O primeiro Golden Case está em `golden_cases/bdo_brasil_2026-09-03.md`.
 
 | Estado | Descrição |
 |--------|-----------|
-| **IMPLEMENTADO** | `Dockerfile`, `docker-compose.yml`, `.dockerignore` criados |
-| **VALIDADO** | Connectivity gate: container → host.docker.internal:4096 → OpenCode Server → GET /agent → account-intelligence FOUND |
-| **NÃO VALIDADO** | Execução completa do pipeline via Docker (pendente) |
-| **PLANEJADO** | Deploy em Hermes ou outro ambiente containerizado |
+| **LOCAL / NÃO VERSIONADO** | `Dockerfile`, `docker-compose.yml`, `.dockerignore` existem apenas localmente e NÃO estão versionados na main neste checkpoint |
+| **VALIDADO LOCALMENTE** | Connectivity gate: container → host.docker.internal:4096 → OpenCode Server → GET /agent → account-intelligence FOUND |
+| **NÃO VALIDADO** | Execução completa do pipeline via Docker |
+| **PLANEJADO** | Versionamento e checkpoint específico de Docker; deploy futuro |
 
 ---
 
