@@ -72,6 +72,19 @@ Retorne APENAS JSON valido no formato:
 """
 
 
+def _strip_markdown_fences(text: str) -> str:
+    """Remove cercas de markdown (```json ... ```) de resposta LLM."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines)
+    return stripped
+
+
 def gap_analysis(
     state: AccountIntelligenceState,
     llm: LLMProvider | None = None,
@@ -146,7 +159,7 @@ Retorne APENAS JSON valido conforme instrucoes do system prompt."""
     response = llm.chat(prompt, system=SYSTEM_PROMPT)
 
     try:
-        data = json.loads(response.text)
+        data = json.loads(_strip_markdown_fences(response.text))
     except json.JSONDecodeError as e:
         raise RuntimeError(
             f"gap_analysis: resposta do LLM nao e JSON valido. "

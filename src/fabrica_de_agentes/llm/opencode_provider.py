@@ -36,30 +36,29 @@ class OpenCodeProvider(LLMProvider):
         base_url: str | None = None,
         username: str | None = None,
         password: str | None = None,
-        timeout: int = 120,
+        timeout: int = 300,
         agent: str = DEFAULT_AGENT,
         validate_agent: bool = True,
+        model: str | None = None,
     ):
-        self._base_url = base_url or "http://127.0.0.1:4096"
+        self._base_url = base_url or os.environ.get(
+            "OPENCODE_SERVER_URL", "http://127.0.0.1:4096"
+        )
         self._username = username or os.environ.get("OPENCODE_SERVER_USERNAME", "opencode")
         self._password = password or os.environ.get("OPENCODE_SERVER_PASSWORD", "")
         self._timeout = timeout
         self._session_id: str | None = None
         self._agent = agent
         self._agent_validated = False
-
-        if not self._password:
-            raise ValueError(
-                "OPENCODE_SERVER_PASSWORD nao configurada. "
-                "Defina a variavel de ambiente OPENCODE_SERVER_PASSWORD "
-                "ou passe password no construtor."
-            )
+        self._model = model or os.environ.get("OPENCODE_MODEL", "")
 
         if validate_agent:
             self._validate_agent_exists()
 
-    def _auth_header(self) -> str:
-        """Gera header de autenticacao HTTP basic."""
+    def _auth_header(self) -> str | None:
+        """Gera header de autenticacao HTTP basic. Retorna None se sem senha."""
+        if not self._password:
+            return None
         creds = base64.b64encode(
             f"{self._username}:{self._password}".encode()
         ).decode()
@@ -71,7 +70,9 @@ class OpenCodeProvider(LLMProvider):
         body = json.dumps(data).encode() if data else None
 
         req = urllib.request.Request(url, data=body, method=method)
-        req.add_header("Authorization", self._auth_header())
+        auth = self._auth_header()
+        if auth:
+            req.add_header("Authorization", auth)
         req.add_header("Content-Type", "application/json")
 
         try:
@@ -138,10 +139,26 @@ class OpenCodeProvider(LLMProvider):
         except RuntimeError:
             return False
 
+    def _model_ref(self) -> dict | None:
+        """Retorna o ModelRef para a sessao V1, ou None se sem modelo."""
+        if not self._model:
+            return None
+        if "/" in self._model:
+            provider_id, model_id = self._model.split("/", 1)
+        else:
+            provider_id, model_id = "", self._model
+        return {"id": model_id, "providerID": provider_id}
+
     def _ensure_session(self) -> str:
-        """Cria uma sessao se nao existir."""
+        """Cria uma sessao se nao existir, incluindo agent e model."""
         if self._session_id is None:
-            result = self._request("POST", "/session", {})
+            session_body: dict = {}
+            if self._agent:
+                session_body["agent"] = self._agent
+            model_ref = self._model_ref()
+            if model_ref:
+                session_body["model"] = model_ref
+            result = self._request("POST", "/session", session_body)
             self._session_id = result["id"]
         return self._session_id
 
@@ -181,6 +198,19 @@ class OpenCodeProvider(LLMProvider):
         info = result.get("info", {})
         parts = result.get("parts", [])
 
+        error = info.get("error")
+        if error:
+            error_data = error.get("data", {}) if isinstance(error, dict) else {}
+            error_name = error.get("name", "") if isinstance(error, dict) else str(error)
+            error_msg = error_data.get("message", "") if isinstance(error_data, dict) else ""
+            error_status = error_data.get("statusCode", "") if isinstance(error_data, dict) else ""
+            provider_id = info.get("providerID", "")
+            model_id = info.get("modelID", "")
+            raise RuntimeError(
+                f"OpenCode LLM erro: {error_name} - {error_msg} "
+                f"(HTTP {error_status}, provider={provider_id}, model={model_id})"
+            )
+
         response_text = ""
         for part in parts:
             if part.get("type") == "text":
@@ -204,6 +234,12 @@ class OpenCodeProvider(LLMProvider):
 
     def new_session(self) -> str:
         """Cria uma nova sessao e retorna o ID."""
-        result = self._request("POST", "/session", {})
+        session_body: dict = {}
+        if self._agent:
+            session_body["agent"] = self._agent
+        model_ref = self._model_ref()
+        if model_ref:
+            session_body["model"] = model_ref
+        result = self._request("POST", "/session", session_body)
         self._session_id = result["id"]
         return self._session_id

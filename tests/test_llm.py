@@ -80,10 +80,12 @@ class TestOpenCodeProvider:
     """Testes do OpenCodeProvider com cliente HTTP mockado."""
 
     def test_requires_password(self):
-        """Falha com mensagem clara na ausencia de OPENCODE_SERVER_PASSWORD."""
+        """Sem senha, provider funciona (servidor pode ser unsecured)."""
         with patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(ValueError, match="OPENCODE_SERVER_PASSWORD"):
-                OpenCodeProvider(password="", validate_agent=False)
+            provider = OpenCodeProvider(
+                password="", validate_agent=False
+            )
+            assert provider._password == ""
 
     def test_uses_explicit_password(self):
         """Aceita senha passada explicitamente no construtor."""
@@ -98,6 +100,35 @@ class TestOpenCodeProvider:
         with patch.dict(os.environ, {"OPENCODE_SERVER_PASSWORD": "env-pw-456"}):
             provider = OpenCodeProvider(validate_agent=False)
             assert provider._password == "env-pw-456"
+
+    def test_uses_default_base_url(self):
+        """Base URL padrao e http://127.0.0.1:4096."""
+        with patch.dict(os.environ, {}, clear=True):
+            provider = OpenCodeProvider(
+                password="test-pw", validate_agent=False
+            )
+            assert provider._base_url == "http://127.0.0.1:4096"
+
+    def test_uses_env_base_url(self):
+        """Le OPENCODE_SERVER_URL do ambiente."""
+        with patch.dict(os.environ, {
+            "OPENCODE_SERVER_PASSWORD": "pw",
+            "OPENCODE_SERVER_URL": "http://host.docker.internal:4096",
+        }):
+            provider = OpenCodeProvider(validate_agent=False)
+            assert provider._base_url == "http://host.docker.internal:4096"
+
+    def test_explicit_base_url_overrides_env(self):
+        """Parametro explicitamente passado sobrepoe variavel de ambiente."""
+        with patch.dict(os.environ, {
+            "OPENCODE_SERVER_URL": "http://from-env:4096",
+        }):
+            provider = OpenCodeProvider(
+                password="test-pw",
+                base_url="http://explicit:9999",
+                validate_agent=False,
+            )
+            assert provider._base_url == "http://explicit:9999"
 
     def test_agent_validated_on_init(self):
         """Agente e validado via GET /agent na inicializacao."""
@@ -238,6 +269,160 @@ class TestOpenCodeProvider:
 
         body = json.loads(captured[1].data.decode())
         assert body.get("agent") == "my-agent"
+
+    def test_no_model_by_default(self):
+        """Sem OPENCODE_MODEL, campo model nao e enviado na criacao da sessao."""
+        provider = _make_provider()
+
+        session_resp = _mock_session_response()
+        chat_resp = _mock_chat_response()
+
+        captured = []
+
+        def capture(req, **kw):
+            captured.append(req)
+            return session_resp if len(captured) == 1 else chat_resp
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            provider.chat("test")
+
+        session_body = json.loads(captured[0].data.decode())
+        assert "model" not in session_body
+
+    def test_uses_env_model(self):
+        """Le OPENCODE_MODEL do ambiente e envia na criacao da sessao."""
+        with patch.dict(os.environ, {"OPENCODE_MODEL": "opencode/mimo-v2.5-free"}):
+            provider = OpenCodeProvider(password="test-pw", validate_agent=False)
+            provider._agent_validated = True
+
+        session_resp = _mock_session_response()
+        chat_resp = _mock_chat_response()
+
+        captured = []
+
+        def capture(req, **kw):
+            captured.append(req)
+            return session_resp if len(captured) == 1 else chat_resp
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            provider.chat("test")
+
+        session_body = json.loads(captured[0].data.decode())
+        assert session_body.get("model") == {"id": "mimo-v2.5-free", "providerID": "opencode"}
+
+    def test_explicit_model_overrides_env(self):
+        """Parametro explicitamente passado sobrepoe variavel de ambiente."""
+        with patch.dict(os.environ, {"OPENCODE_MODEL": "opencode/from-env"}):
+            provider = OpenCodeProvider(
+                password="test-pw",
+                model="opencode/from-param",
+                validate_agent=False,
+            )
+            provider._agent_validated = True
+
+        session_resp = _mock_session_response()
+        chat_resp = _mock_chat_response()
+
+        captured = []
+
+        def capture(req, **kw):
+            captured.append(req)
+            return session_resp if len(captured) == 1 else chat_resp
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            provider.chat("test")
+
+        session_body = json.loads(captured[0].data.decode())
+        assert session_body.get("model") == {"id": "from-param", "providerID": "opencode"}
+
+    def test_openai_model_split(self):
+        """openai/gpt-5.4-mini gera providerID=openai e modelID=gpt-5.4-mini."""
+        with patch.dict(os.environ, {"OPENCODE_MODEL": "openai/gpt-5.4-mini"}):
+            provider = OpenCodeProvider(password="test-pw", validate_agent=False)
+            provider._agent_validated = True
+
+        session_resp = _mock_session_response()
+        chat_resp = _mock_chat_response()
+
+        captured = []
+
+        def capture(req, **kw):
+            captured.append(req)
+            return session_resp if len(captured) == 1 else chat_resp
+
+        with patch("urllib.request.urlopen", side_effect=capture):
+            provider.chat("test")
+
+        session_body = json.loads(captured[0].data.decode())
+        assert session_body.get("model") == {"id": "gpt-5.4-mini", "providerID": "openai"}
+
+    def test_chat_raises_on_info_error(self):
+        """HTTP 200 + info.error gera RuntimeError com detalhes do erro."""
+        provider = _make_provider()
+
+        session_resp = _mock_session_response()
+        error_resp = MagicMock()
+        error_resp.read.return_value = json.dumps({
+            "info": {
+                "modelID": "gpt-5.6-luna",
+                "providerID": "opencode-go",
+                "error": {
+                    "name": "APIError",
+                    "data": {
+                        "message": "Insufficient balance",
+                        "statusCode": 401,
+                    },
+                },
+            },
+            "parts": [],
+        }).encode()
+        error_resp.__enter__ = lambda s: s
+        error_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", side_effect=[session_resp, error_resp]):
+            with pytest.raises(RuntimeError, match="Insufficient balance"):
+                provider.chat("test")
+
+    def test_chat_no_error_with_text_parts(self):
+        """HTTP 200 sem error + parts text = comportamento normal."""
+        provider = _make_provider()
+
+        session_resp = _mock_session_response()
+        chat_resp = _mock_chat_response('{"result": "ok"}')
+
+        with patch("urllib.request.urlopen", side_effect=[session_resp, chat_resp]):
+            result = provider.chat("test")
+
+        assert isinstance(result, LLMResponse)
+        assert result.text == '{"result": "ok"}'
+        assert result.model == "gpt-4o"
+
+    def test_chat_error_includes_provider_model(self):
+        """RuntimeError inclui providerID e modelID do erro."""
+        provider = _make_provider()
+
+        session_resp = _mock_session_response()
+        error_resp = MagicMock()
+        error_resp.read.return_value = json.dumps({
+            "info": {
+                "modelID": "deepseek-v4-pro",
+                "providerID": "opencode",
+                "error": {
+                    "name": "RateLimitError",
+                    "data": {
+                        "message": "Rate limit exceeded",
+                        "statusCode": 429,
+                    },
+                },
+            },
+            "parts": [],
+        }).encode()
+        error_resp.__enter__ = lambda s: s
+        error_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", side_effect=[session_resp, error_resp]):
+            with pytest.raises(RuntimeError, match="RateLimitError.*deepseek-v4-pro"):
+                provider.chat("test")
 
 
 # =============================================================================
@@ -1031,10 +1216,14 @@ class TestExaRequiresLLM:
     def test_exa_without_llm_raises_error(self):
         """provider=exa sem --llm falha se OpenCode nao disponivel."""
         with patch.dict(os.environ, {"EXA_API_KEY": "fake-key"}, clear=False):
-            with pytest.raises(RuntimeError, match="provider=exa requer LLM"):
-                from fabrica_de_agentes.cli import run_agent
+            with patch(
+                "fabrica_de_agentes.cli._get_llm",
+                side_effect=RuntimeError("OpenCode indisponivel"),
+            ):
+                with pytest.raises(RuntimeError, match="provider=exa requer LLM"):
+                    from fabrica_de_agentes.cli import run_agent
 
-                run_agent("Test", provider_name="exa")
+                    run_agent("Test", provider_name="exa")
 
     def test_exa_with_llm_none_explicit(self):
         """provider=exa + --llm none e permitido (escolha explicita)."""
