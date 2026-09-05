@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from etl.rfb_schema import AUXILIARY_LOAD_TABLES
+
 
 @dataclass(frozen=True)
 class EtlConfig:
@@ -43,25 +45,39 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="etl", description="ETL RFB 08/2026")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    def add_db_args(target: argparse.ArgumentParser) -> None:
+        target.add_argument("--db-host")
+        target.add_argument("--db-port", type=int)
+        target.add_argument("--database")
+        target.add_argument("--db-name", dest="database", help=argparse.SUPPRESS)
+        target.add_argument("--db-user")
+
     preflight = subparsers.add_parser("preflight", help="Executa preflight sem iniciar carga")
+    add_db_args(preflight)
     preflight.add_argument("--competencia", required=True)
     preflight.add_argument("--source-dir", required=True)
-    preflight.add_argument("--db-host")
-    preflight.add_argument("--db-port", type=int)
-    preflight.add_argument("--database")
-    preflight.add_argument("--db-name", dest="database", help=argparse.SUPPRESS)
-    preflight.add_argument("--db-user")
     preflight.add_argument("--resume-execucao-id")
+
+    init_schema = subparsers.add_parser("init-rfb-schema", help="Cria schema RFB seguro")
+    add_db_args(init_schema)
+
+    load = subparsers.add_parser("load", help="Carrega tabela RFB autorizada")
+    add_db_args(load)
+    load.add_argument("--competencia", required=True)
+    load.add_argument("--source-dir", required=True)
+    load.add_argument("--table", required=True, choices=list(AUXILIARY_LOAD_TABLES))
+    load.add_argument("--resume-execucao-id")
+
     return parser
 
 
 def load_config(args: argparse.Namespace) -> EtlConfig:
     return EtlConfig(
-        competencia=args.competencia,
-        source_dir=Path(args.source_dir),
-        db_host=args.db_host or os.getenv("DB_HOST", "127.0.0.1"),
-        db_port=args.db_port or int(os.getenv("DB_PORT", "5432")),
-        db_name=args.database or os.getenv("DB_NAME", "postgres"),
-        db_user=args.db_user or os.getenv("DB_USER", "postgres"),
+        competencia=getattr(args, "competencia", ""),
+        source_dir=Path(getattr(args, "source_dir", ".")),
+        db_host=getattr(args, "db_host", None) or os.getenv("DB_HOST", "127.0.0.1"),
+        db_port=getattr(args, "db_port", None) or int(os.getenv("DB_PORT", "5432")),
+        db_name=getattr(args, "database", None) or os.getenv("DB_NAME", "postgres"),
+        db_user=getattr(args, "db_user", None) or os.getenv("DB_USER", "postgres"),
         db_password=os.getenv("DB_PASS", ""),
     )

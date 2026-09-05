@@ -234,6 +234,15 @@ RFB_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
     ),
 )
 
+AUXILIARY_LOAD_TABLES: tuple[str, ...] = (
+    "motivos",
+    "cnaes",
+    "municipios",
+    "naturezas_juridicas",
+    "paises",
+    "qualificacoes",
+)
+
 
 class RfbSchemaConflictError(RuntimeError):
     pass

@@ -58,6 +58,33 @@ class ExecutionRecord:
     preflight_mensagem: str | None = None
 
 
+@dataclass(frozen=True)
+class CheckpointRecord:
+    execucao_id: str
+    zip_nome: str
+    status: ExecutionStatus
+    ordem_execucao: int
+    fase: str
+    arquivo_interno: str
+    tabela_destino: str
+    source_records: int = 0
+    accepted_records: int = 0
+    discarded_records: int = 0
+    sent_to_copy_records: int = 0
+    bytes_0x00_removidos: int = 0
+    checksum_sha256: str | None = None
+    source_zip_size_bytes: int | None = None
+    source_member_size_bytes: int | None = None
+    source_member_crc32: str | None = None
+    source_member_name: str | None = None
+    source_eof_ok: bool = False
+    source_crc_ok: bool = False
+    source_fingerprint_ok: bool = False
+    target_rowcount_before: int | None = None
+    expected_target_count_after: int | None = None
+    target_rowcount_after: int | None = None
+
+
 def build_control_schema_sql() -> str:
     return """
 CREATE SCHEMA IF NOT EXISTS etl_control;
@@ -330,6 +357,94 @@ class ControlRepository:
                             table_name,
                             ExecutionStatus.PENDING.value,
                         ),
+                    )
+        except Exception:
+            conn.rollback()
+            raise
+
+    def load_checkpoint(
+        self,
+        conn,
+        execucao_id: str,
+        zip_name: str,
+    ) -> CheckpointRecord | None:
+        with conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        execucao_id,
+                        zip_nome,
+                        status,
+                        ordem_execucao,
+                        fase,
+                        arquivo_interno,
+                        tabela_destino,
+                        source_records,
+                        accepted_records,
+                        discarded_records,
+                        sent_to_copy_records,
+                        bytes_0x00_removidos,
+                        checksum_sha256,
+                        source_zip_size_bytes,
+                        source_member_size_bytes,
+                        source_member_crc32,
+                        source_member_name,
+                        source_eof_ok,
+                        source_crc_ok,
+                        source_fingerprint_ok,
+                        target_rowcount_before,
+                        expected_target_count_after,
+                        target_rowcount_after
+                    FROM etl_control.checkpoints_arquivos
+                    WHERE execucao_id = %s AND zip_nome = %s
+                    """,
+                    (execucao_id, zip_name),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return None
+        return CheckpointRecord(
+            execucao_id=row[0],
+            zip_nome=row[1],
+            status=ExecutionStatus(row[2]),
+            ordem_execucao=row[3],
+            fase=row[4],
+            arquivo_interno=row[5],
+            tabela_destino=row[6],
+            source_records=row[7],
+            accepted_records=row[8],
+            discarded_records=row[9],
+            sent_to_copy_records=row[10],
+            bytes_0x00_removidos=row[11],
+            checksum_sha256=row[12],
+            source_zip_size_bytes=row[13],
+            source_member_size_bytes=row[14],
+            source_member_crc32=row[15],
+            source_member_name=row[16],
+            source_eof_ok=row[17],
+            source_crc_ok=row[18],
+            source_fingerprint_ok=row[19],
+            target_rowcount_before=row[20],
+            expected_target_count_after=row[21],
+            target_rowcount_after=row[22],
+        )
+
+    def update_checkpoint_metrics(self, conn, execucao_id: str, zip_name: str, **metrics) -> None:
+        if not metrics:
+            return
+        assignments = ", ".join(f"{key} = %s" for key in metrics)
+        values = list(metrics.values()) + [execucao_id, zip_name]
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        UPDATE etl_control.checkpoints_arquivos
+                        SET {assignments}
+                        WHERE execucao_id = %s AND zip_nome = %s
+                        """,
+                        values,
                     )
         except Exception:
             conn.rollback()
