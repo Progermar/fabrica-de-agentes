@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+class SourceArtifactError(ValueError):
+    """Erro de dominio para uma origem RFB invalida."""
+
+
 _ZIP_KIND_PATTERNS = [
     ("Empresas", re.compile(r"^Empresas\d+\.zip$", re.IGNORECASE)),
     ("Estabelecimentos", re.compile(r"^Estabelecimentos\d+\.zip$", re.IGNORECASE)),
@@ -30,6 +34,7 @@ class ZipArtifact:
     zip_name: str
     zip_path: Path
     sha256: str
+    zip_size_bytes: int
     member_name: str
     member_size_bytes: int
     member_crc32: int
@@ -73,27 +78,40 @@ def classify_zip_name(zip_name: str) -> str | None:
 
 def inspect_zip_artifact(zip_path: Path) -> ZipArtifact:
     zip_path = Path(zip_path)
+    if not zip_path.is_file():
+        raise SourceArtifactError(f"ZIP inexistente: {zip_path}")
+
+    # O preflight calcula o SHA do ZIP compactado, mas nao valida o membro inteiro.
     hasher = hashlib.sha256()
     with zip_path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             hasher.update(chunk)
     sha256 = hasher.hexdigest()
 
-    with zipfile.ZipFile(zip_path) as archive:
-        members = archive.infolist()
-        if not members:
-            raise ValueError(f"ZIP sem membros: {zip_path.name}")
-        member = members[0]
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            members = [member for member in archive.infolist() if not member.is_dir()]
+    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+        raise SourceArtifactError(f"ZIP invalido: {zip_path.name}") from exc
+
+    if not members:
+        raise SourceArtifactError(f"ZIP sem membro regular: {zip_path.name}")
+    if len(members) != 1:
+        raise SourceArtifactError(
+            f"ZIP deve conter um unico membro regular: {zip_path.name}"
+        )
+    member = members[0]
 
     kind = classify_zip_name(zip_path.name)
     if kind is None:
-        raise ValueError(f"ZIP nao reconhecido: {zip_path.name}")
+        raise SourceArtifactError(f"ZIP nao reconhecido: {zip_path.name}")
 
     return ZipArtifact(
         kind=kind,
         zip_name=zip_path.name,
         zip_path=zip_path,
         sha256=sha256,
+        zip_size_bytes=zip_path.stat().st_size,
         member_name=member.filename,
         member_size_bytes=member.file_size,
         member_crc32=member.CRC,

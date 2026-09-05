@@ -37,11 +37,51 @@ class FakeConnection:
     def cursor(self):
         return FakeCursor(self.fetch_value)
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
 
 class FakePostgres:
     def __init__(self, fetch_value=True):
         self.control = FakeConnection(fetch_value=fetch_value)
         self.data = FakeConnection(fetch_value=fetch_value)
+
+
+class FakeControlRepository:
+    def __init__(self):
+        self.records = {}
+        self.transitions = []
+
+    def ensure_schema(self, conn):
+        pass
+
+    def insert_execution(self, conn, **kwargs):
+        self.records[kwargs["execucao_id"]] = {
+            "execucao_id": kwargs["execucao_id"],
+            "competencia": kwargs["competencia"],
+            "origem_fingerprint": kwargs["origem_fingerprint"],
+            "status": kwargs["status"].value,
+        }
+
+    def load_execution(self, conn, execucao_id):
+        return self.records.get(execucao_id)
+
+    def mark_preflight(self, conn, execucao_id, message):
+        self.records[execucao_id]["preflight_ok"] = True
+        self.records[execucao_id]["preflight_mensagem"] = message
+
+    def transition_execution(self, conn, execucao_id, to_status, message=None):
+        self.records[execucao_id]["status"] = to_status.value
+        self.transitions.append((execucao_id, to_status.value, message))
 
 
 def test_discover_zips_ignora_download_zip_e_classifica_grupos(tmp_path: Path):
@@ -93,7 +133,7 @@ def test_lista_de_tabelas_rfb_nao_inclui_usuarios():
 
 
 def test_lock_concorrente_bloqueia_segunda_execucao():
-    from etl.control import LockAcquisitionError, AdvisoryLockManager
+    from etl.control import AdvisoryLockManager, LockAcquisitionError
 
     class FakeConn:
         def __init__(self, responses):
@@ -128,7 +168,7 @@ def test_lock_concorrente_bloqueia_segunda_execucao():
 
 
 def test_nova_execucao_rejeita_destino_nao_vazio(tmp_path: Path):
-    from etl.preflight import PreflightService, PreflightContext, PreflightError
+    from etl.preflight import PreflightContext, PreflightError, PreflightService
 
     make_zip(tmp_path / "Empresas0.zip")
     make_zip(tmp_path / "Estabelecimentos0.zip")
@@ -168,6 +208,7 @@ def test_nova_execucao_rejeita_destino_nao_vazio(tmp_path: Path):
     service = PreflightService(
         postgres_factory=lambda: FakePostgres(),
         source_checker=FakeSourceChecker(),
+        control_repo=FakeControlRepository(),
     )
 
     with pytest.raises(PreflightError):
@@ -181,11 +222,14 @@ def test_usuarios_nao_entra_na_verificacao_de_vazio():
 
 
 def test_preflight_falha_se_zip_obrigatorio_ausente(tmp_path: Path):
-    from etl.preflight import PreflightService, PreflightContext, PreflightError
+    from etl.preflight import PreflightContext, PreflightError, PreflightService
 
     make_zip(tmp_path / "Empresas0.zip")
 
-    service = PreflightService(postgres_factory=lambda: FakePostgres())
+    service = PreflightService(
+        postgres_factory=lambda: FakePostgres(),
+        control_repo=FakeControlRepository(),
+    )
     ctx = PreflightContext(competencia="2026-08", source_dir=tmp_path, resume_execucao_id=None)
 
     with pytest.raises(PreflightError):
@@ -193,7 +237,7 @@ def test_preflight_falha_se_zip_obrigatorio_ausente(tmp_path: Path):
 
 
 def test_fingerprint_diferente_impede_retomada_silenciosa(tmp_path: Path):
-    from etl.preflight import PreflightService, PreflightContext, PreflightError
+    from etl.preflight import PreflightContext, PreflightError, PreflightService
 
     make_zip(tmp_path / "Empresas0.zip")
     make_zip(tmp_path / "Estabelecimentos0.zip")
@@ -207,7 +251,7 @@ def test_fingerprint_diferente_impede_retomada_silenciosa(tmp_path: Path):
     make_zip(tmp_path / "Qualificacoes.zip")
 
     class FakeResumeStore:
-        def load_execution(self, execucao_id):
+        def load_execution(self, conn, execucao_id):
             return {
                 "execucao_id": execucao_id,
                 "competencia": "2026-08",
@@ -218,6 +262,7 @@ def test_fingerprint_diferente_impede_retomada_silenciosa(tmp_path: Path):
     service = PreflightService(
         postgres_factory=lambda: FakePostgres(),
         resume_store=FakeResumeStore(),
+        control_repo=FakeControlRepository(),
     )
     ctx = PreflightContext(
         competencia="2026-08",
@@ -230,7 +275,7 @@ def test_fingerprint_diferente_impede_retomada_silenciosa(tmp_path: Path):
 
 
 def test_preflight_nao_inicia_carga(tmp_path: Path):
-    from etl.preflight import PreflightService, PreflightContext
+    from etl.preflight import PreflightContext, PreflightService
 
     make_zip(tmp_path / "Empresas0.zip")
     make_zip(tmp_path / "Estabelecimentos0.zip")
@@ -262,9 +307,181 @@ def test_preflight_nao_inicia_carga(tmp_path: Path):
     service = PreflightService(
         postgres_factory=lambda: FakePostgres(),
         source_checker=FakeSourceChecker(),
+        control_repo=FakeControlRepository(),
     )
     ctx = PreflightContext(competencia="2026-08", source_dir=tmp_path, resume_execucao_id=None)
 
     result = service.run(ctx)
 
     assert result.load_started is False
+
+
+def test_configuracao_cli_precede_env_e_senha_vem_do_ambiente(monkeypatch):
+    from etl.config import build_parser, load_config
+
+    monkeypatch.setenv("DB_HOST", "env-host")
+    monkeypatch.setenv("DB_PORT", "5440")
+    monkeypatch.setenv("DB_NAME", "env-db")
+    monkeypatch.setenv("DB_USER", "env-user")
+    monkeypatch.setenv("DB_PASS", "env-secret")
+    args = build_parser().parse_args([
+        "preflight",
+        "--competencia", "2026-08",
+        "--source-dir", "08-2026",
+        "--db-host", "cli-host",
+        "--db-port", "5441",
+        "--database", "cli-db",
+        "--db-user", "cli-user",
+    ])
+    config = load_config(args)
+
+    assert config.db_settings == {
+        "db_host": "cli-host",
+        "db_port": 5441,
+        "db_name": "cli-db",
+        "db_user": "cli-user",
+        "db_password": "env-secret",
+    }
+
+
+def test_fingerprint_independe_da_ordem_dos_arquivos(tmp_path: Path):
+    from etl.source import ZipInventory, inspect_zip_artifact
+
+    names = ["Empresas0.zip", "Estabelecimentos0.zip", "Socios0.zip"]
+    for name in names:
+        make_zip(tmp_path / name)
+    artifacts = [inspect_zip_artifact(tmp_path / name) for name in names]
+    first = ZipInventory(zip_files=artifacts, ignored=[]).fingerprint
+    second = ZipInventory(zip_files=list(reversed(artifacts)), ignored=[]).fingerprint
+    assert first == second
+
+
+@pytest.mark.parametrize("member_names", [[], ["a.csv", "b.csv"]])
+def test_zip_sem_um_unico_membro_regular_falha(tmp_path: Path, member_names):
+    from etl.source import SourceArtifactError, inspect_zip_artifact
+
+    path = tmp_path / "Empresas0.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        for name in member_names:
+            archive.writestr(name, b"x")
+    with pytest.raises(SourceArtifactError):
+        inspect_zip_artifact(path)
+
+
+def test_zip_invalido_e_diretorio_inexistente_falham_com_erro_de_dominio(tmp_path: Path):
+    from etl.preflight import PreflightContext, PreflightError, PreflightService
+
+    invalid = tmp_path / "Empresas0.zip"
+    invalid.write_bytes(b"not-a-zip")
+    service = PreflightService()
+    with pytest.raises(PreflightError):
+        service.run(PreflightContext("2026-08", tmp_path))
+    with pytest.raises(PreflightError):
+        service.run(PreflightContext("2026-08", tmp_path / "missing"))
+
+
+def test_competencia_do_diretorio_e_validada(tmp_path: Path):
+    from etl.preflight import PreflightContext, PreflightError, PreflightService
+
+    source = tmp_path / "08-2026"
+    source.mkdir()
+    for name in [
+        "Empresas0.zip", "Estabelecimentos0.zip", "Socios0.zip", "Simples.zip",
+        "Cnaes.zip", "Municipios.zip", "Motivos.zip", "Naturezas.zip", "Paises.zip",
+        "Qualificacoes.zip",
+    ]:
+        make_zip(source / name)
+    with pytest.raises(PreflightError):
+        PreflightService().run(PreflightContext("2026-09", source))
+
+
+def test_preflight_atualiza_preflight_ok_e_running(tmp_path: Path):
+    from etl.preflight import PreflightContext, PreflightService
+
+    source = tmp_path / "08-2026"
+    source.mkdir()
+    for name in [
+        "Empresas0.zip", "Estabelecimentos0.zip", "Socios0.zip", "Simples.zip",
+        "Cnaes.zip", "Municipios.zip", "Motivos.zip", "Naturezas.zip", "Paises.zip",
+        "Qualificacoes.zip",
+    ]:
+        make_zip(source / name)
+    repository = FakeControlRepository()
+
+    class EmptySourceChecker:
+        def table_counts(self):
+            return {name: 0 for name in [
+                "cnaes", "municipios", "motivos", "naturezas_juridicas", "paises",
+                "qualificacoes", "empresas", "estabelecimentos", "simples", "socios",
+            ]}
+
+    result = PreflightService(
+        postgres_factory=lambda: FakePostgres(),
+        source_checker=EmptySourceChecker(),
+        control_repo=repository,
+    ).run(PreflightContext("2026-08", source))
+    record = repository.records[result.execucao_id]
+    assert record["preflight_ok"] is True
+    assert record["status"] == "RUNNING"
+
+
+def test_checker_de_tabelas_com_conjunto_incompleto_falha(tmp_path: Path):
+    from etl.preflight import PreflightContext, PreflightError, PreflightService
+
+    source = tmp_path / "08-2026"
+    source.mkdir()
+    for name in [
+        "Empresas0.zip", "Estabelecimentos0.zip", "Socios0.zip", "Simples.zip",
+        "Cnaes.zip", "Municipios.zip", "Motivos.zip", "Naturezas.zip", "Paises.zip",
+        "Qualificacoes.zip",
+    ]:
+        make_zip(source / name)
+    with pytest.raises(PreflightError, match="conjunto incompleto"):
+        PreflightService(
+            postgres_factory=lambda: FakePostgres(),
+            source_checker=type("IncompleteChecker", (), {
+                "table_counts": lambda self: {"empresas": 0},
+            })(),
+            control_repo=FakeControlRepository(),
+        ).run(PreflightContext("2026-08", source))
+
+
+def test_configuracao_chega_a_factory_usada_pelo_preflight(tmp_path: Path):
+    from etl.config import EtlConfig
+    from etl.preflight import PreflightContext, PreflightService
+
+    captured = []
+
+    def factory(config):
+        captured.append(config.db_settings)
+        return FakePostgres()
+
+    source = tmp_path / "08-2026"
+    source.mkdir()
+    for name in [
+        "Empresas0.zip", "Estabelecimentos0.zip", "Socios0.zip", "Simples.zip",
+        "Cnaes.zip", "Municipios.zip", "Motivos.zip", "Naturezas.zip", "Paises.zip",
+        "Qualificacoes.zip",
+    ]:
+        make_zip(source / name)
+    repository = FakeControlRepository()
+
+    class EmptySourceChecker:
+        def table_counts(self):
+            return {name: 0 for name in [
+                "cnaes", "municipios", "motivos", "naturezas_juridicas", "paises",
+                "qualificacoes", "empresas", "estabelecimentos", "simples", "socios",
+            ]}
+
+    config = EtlConfig(
+        "2026-08", source, "cli-host", 5441, "cli-db", "cli-user", "env-secret"
+    )
+    result = PreflightService(
+        config=config,
+        postgres_factory=factory,
+        source_checker=EmptySourceChecker(),
+        control_repo=repository,
+    ).run(PreflightContext("2026-08", source))
+    assert result.lease is not None
+    result.lease.release()
+    assert captured == [config.db_settings]

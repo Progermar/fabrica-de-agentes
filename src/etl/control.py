@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
-from enum import Enum
-
+from enum import StrEnum
 
 RFB_TABLES = [
     "cnaes",
@@ -18,7 +18,7 @@ RFB_TABLES = [
 ]
 
 
-class ExecutionStatus(str, Enum):
+class ExecutionStatus(StrEnum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     COMMITTED = "COMMITTED"
@@ -26,12 +26,25 @@ class ExecutionStatus(str, Enum):
     INCONSISTENT = "INCONSISTENT"
 
     @classmethod
-    def from_string(cls, value: str) -> "ExecutionStatus":
+    def from_string(cls, value: str) -> ExecutionStatus:
         return cls(value.upper())
 
 
 class LockAcquisitionError(RuntimeError):
     pass
+
+
+class InvalidStateTransitionError(ValueError):
+    pass
+
+
+VALID_TRANSITIONS = {
+    "PENDING": {"RUNNING"},
+    "RUNNING": {"COMMITTED", "FAILED", "INCONSISTENT"},
+    "FAILED": {"RUNNING"},
+    "COMMITTED": set(),
+    "INCONSISTENT": set(),
+}
 
 
 @dataclass(frozen=True)
@@ -138,18 +151,39 @@ class AdvisoryLockManager:
 
     def acquire(self, conn, competencia: str) -> str:
         lock_key = f"{self.project_name}:{competencia}"
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT pg_try_advisory_lock(hashtext(%s))", (lock_key,))
-            acquired = bool(cursor.fetchone()[0])
+        with conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT pg_try_advisory_lock(hashtext(%s))", (lock_key,))
+                acquired = bool(cursor.fetchone()[0])
         if not acquired:
             raise LockAcquisitionError(f"Execucao concorrente bloqueada para {competencia}")
         return lock_key
 
+    def release(self, conn, lock_key: str) -> None:
+        with conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_unlock(hashtext(%s))", (lock_key,))
+                if not bool(cursor.fetchone()[0]):
+                    raise LockAcquisitionError(f"Lock nao estava adquirido: {lock_key}")
+
+    @contextmanager
+    def session_lock(self, conn, competencia: str):
+        lock_key = self.acquire(conn, competencia)
+        try:
+            yield lock_key
+        finally:
+            self.release(conn, lock_key)
+
 
 class ControlRepository:
     def ensure_schema(self, conn) -> None:
-        with conn.cursor() as cursor:
-            cursor.execute(build_control_schema_sql())
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(build_control_schema_sql())
+        except Exception:
+            conn.rollback()
+            raise
 
     def insert_execution(
         self,
@@ -162,27 +196,34 @@ class ControlRepository:
         origem_zip_base_dir: str,
         status: ExecutionStatus = ExecutionStatus.PENDING,
     ) -> None:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO etl_control.execucoes (
-                    execucao_id, origem_diretorio, origem_fingerprint, status,
-                    competencia, origem_zip_base_dir
-                ) VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    execucao_id,
-                    origem_diretorio,
-                    origem_fingerprint,
-                    status.value,
-                    competencia,
-                    origem_zip_base_dir,
-                ),
-            )
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO etl_control.execucoes (
+                            execucao_id, origem_diretorio, origem_fingerprint, status,
+                            competencia, origem_zip_base_dir
+                        ) VALUES (%s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            execucao_id,
+                            origem_diretorio,
+                            origem_fingerprint,
+                            status.value,
+                            competencia,
+                            origem_zip_base_dir,
+                        ),
+                    )
+        except Exception:
+            conn.rollback()
+            raise
 
     def load_execution(self, conn, execucao_id: str) -> dict[str, object] | None:
-        with conn.cursor() as cursor:
-            cursor.execute(
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
                 """
                 SELECT
                     execucao_id,
@@ -194,9 +235,12 @@ class ControlRepository:
                 FROM etl_control.execucoes
                 WHERE execucao_id = %s
                 """,
-                (execucao_id,),
-            )
-            row = cursor.fetchone()
+                        (execucao_id,),
+                    )
+                    row = cursor.fetchone()
+        except Exception:
+            conn.rollback()
+            raise
         if row is None:
             return None
         return {
@@ -207,6 +251,166 @@ class ControlRepository:
             "preflight_ok": row[4],
             "preflight_mensagem": row[5],
         }
+
+    def mark_preflight(self, conn, execucao_id: str, message: str) -> None:
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE etl_control.execucoes
+                        SET preflight_ok = TRUE, preflight_mensagem = %s
+                        WHERE execucao_id = %s
+                        """,
+                        (message, execucao_id),
+                    )
+        except Exception:
+            conn.rollback()
+            raise
+
+    def transition_execution(
+        self,
+        conn,
+        execucao_id: str,
+        to_status: ExecutionStatus,
+        message: str | None = None,
+    ) -> None:
+        self._transition(
+            conn,
+            table="execucoes",
+            identity=(execucao_id,),
+            to_status=to_status,
+            message=message,
+        )
+
+    def transition_checkpoint(
+        self,
+        conn,
+        execucao_id: str,
+        zip_name: str,
+        to_status: ExecutionStatus,
+        message: str | None = None,
+    ) -> None:
+        self._transition(
+            conn,
+            table="checkpoints_arquivos",
+            identity=(execucao_id, zip_name),
+            to_status=to_status,
+            message=message,
+        )
+
+    def create_checkpoint(
+        self,
+        conn,
+        *,
+        execucao_id: str,
+        zip_name: str,
+        phase: str,
+        member_name: str,
+        table_name: str,
+        order: int,
+    ) -> None:
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO etl_control.checkpoints_arquivos
+                            (execucao_id, ordem_execucao, fase, zip_tipo, zip_nome,
+                             arquivo_interno, tabela_destino, status)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            execucao_id,
+                            order,
+                            phase,
+                            phase,
+                            zip_name,
+                            member_name,
+                            table_name,
+                            ExecutionStatus.PENDING.value,
+                        ),
+                    )
+        except Exception:
+            conn.rollback()
+            raise
+
+    def _transition(self, conn, *, table, identity, to_status, message) -> None:
+        try:
+            with conn:
+                with conn.cursor() as cursor:
+                    if table == "execucoes":
+                        cursor.execute(
+                            """
+                            SELECT status, competencia
+                            FROM etl_control.execucoes
+                            WHERE execucao_id = %s
+                            FOR UPDATE
+                            """,
+                            identity,
+                        )
+                        row = cursor.fetchone()
+                    else:
+                        cursor.execute(
+                            """
+                            SELECT status, zip_nome, fase, arquivo_interno
+                            FROM etl_control.checkpoints_arquivos
+                            WHERE execucao_id = %s AND zip_nome = %s
+                            FOR UPDATE
+                            """,
+                            identity,
+                        )
+                        row = cursor.fetchone()
+                    if row is None:
+                        raise InvalidStateTransitionError(f"Estado nao encontrado: {identity}")
+                    current = str(row[0])
+                    if to_status.value not in VALID_TRANSITIONS[current]:
+                        raise InvalidStateTransitionError(
+                            f"Transicao invalida: {current} -> {to_status.value}"
+                        )
+                    if table == "execucoes":
+                        cursor.execute(
+                            """
+                            UPDATE etl_control.execucoes
+                            SET status = %s,
+                                preflight_mensagem = COALESCE(%s, preflight_mensagem)
+                            WHERE execucao_id = %s
+                            """,
+                            (to_status.value, message, identity[0]),
+                        )
+                        archive_name = ""
+                        internal_name = ""
+                        phase = "execution"
+                    else:
+                        cursor.execute(
+                            """
+                            UPDATE etl_control.checkpoints_arquivos
+                            SET status = %s,
+                                mensagem_erro = COALESCE(%s, mensagem_erro)
+                            WHERE execucao_id = %s AND zip_nome = %s
+                            """,
+                            (to_status.value, message, identity[0], identity[1]),
+                        )
+                        archive_name = identity[1]
+                        internal_name = str(row[3])
+                        phase = str(row[2])
+                    cursor.execute(
+                        """
+                        INSERT INTO etl_control.auditoria_arquivos
+                            (
+                                execucao_id, zip_nome, arquivo_interno, fase,
+                                de_status, para_status, mensagem
+                            )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            identity[0], archive_name, internal_name, phase,
+                            current, to_status.value, message,
+                        ),
+                    )
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def tables_are_empty(counts: dict[str, int]) -> bool:
