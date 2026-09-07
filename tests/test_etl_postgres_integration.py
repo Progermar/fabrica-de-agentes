@@ -16,14 +16,21 @@ from etl.control import (
 
 
 def connection():
-    password = os.getenv("ETL_TEST_DB_PASSWORD") or os.getenv("DB_PASS")
-    if not password:
-        pytest.skip("ETL_TEST_DB_PASSWORD ou DB_PASS nao configurado")
+    host = os.getenv("ETL_TEST_DB_HOST")
+    port = os.getenv("ETL_TEST_DB_PORT")
+    name = os.getenv("ETL_TEST_DB_NAME")
+    user = os.getenv("ETL_TEST_DB_USER")
+    password = os.getenv("ETL_TEST_DB_PASSWORD")
+    if not all([host, port, name, user, password]):
+        raise RuntimeError("ETL_TEST_DB_* deve apontar para banco de teste isolado")
+    if name == "dexaprospect":
+        raise RuntimeError("Banco operacional bloqueado para testes destrutivos")
+    assert host is not None and port is not None and name is not None and user is not None and password is not None
     return psycopg2.connect(
-        host=os.getenv("ETL_TEST_DB_HOST", os.getenv("DB_HOST", "127.0.0.1")),
-        port=int(os.getenv("ETL_TEST_DB_PORT", os.getenv("DB_PORT", "5432"))),
-        dbname=os.getenv("ETL_TEST_DB_NAME", os.getenv("DB_NAME", "postgres")),
-        user=os.getenv("ETL_TEST_DB_USER", os.getenv("DB_USER", "postgres")),
+        host=host,
+        port=int(port),
+        dbname=name,
+        user=user,
         password=password,
     )
 

@@ -99,12 +99,12 @@ RFB_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
         create_sql="""
         CREATE TABLE IF NOT EXISTS public.empresas (
             cnpj_basico TEXT PRIMARY KEY,
-            razao_social TEXT NOT NULL,
-            natureza_juridica TEXT NOT NULL,
-            qualificacao_responsavel TEXT NOT NULL,
-            capital_social TEXT NOT NULL,
-            porte_empresa TEXT NOT NULL,
-            ente_federativo_responsavel TEXT NOT NULL
+            razao_social TEXT,
+            natureza_juridica TEXT,
+            qualificacao_responsavel TEXT,
+            capital_social TEXT,
+            porte_empresa TEXT,
+            ente_federativo_responsavel TEXT
         )
         """,
     ),
@@ -147,33 +147,33 @@ RFB_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
             cnpj_basico TEXT NOT NULL,
             cnpj_ordem TEXT NOT NULL,
             cnpj_dv TEXT NOT NULL,
-            identificador_matriz_filial TEXT NOT NULL,
-            nome_fantasia TEXT NOT NULL,
-            situacao_cadastral TEXT NOT NULL,
-            data_situacao_cadastral TEXT NOT NULL,
-            motivo_situacao_cadastral TEXT NOT NULL,
-            nome_cidade_exterior TEXT NOT NULL,
-            pais TEXT NOT NULL,
-            data_inicio_atividade TEXT NOT NULL,
-            cnae_fiscal_principal TEXT NOT NULL,
-            cnae_fiscal_secundaria TEXT NOT NULL,
-            tipo_logradouro TEXT NOT NULL,
-            logradouro TEXT NOT NULL,
-            numero TEXT NOT NULL,
-            complemento TEXT NOT NULL,
-            bairro TEXT NOT NULL,
-            cep TEXT NOT NULL,
-            uf TEXT NOT NULL,
-            municipio TEXT NOT NULL,
-            ddd1 TEXT NOT NULL,
-            telefone1 TEXT NOT NULL,
-            ddd2 TEXT NOT NULL,
-            telefone2 TEXT NOT NULL,
-            ddd_fax TEXT NOT NULL,
-            fax TEXT NOT NULL,
-            correio_eletronico TEXT NOT NULL,
-            situacao_especial TEXT NOT NULL,
-            data_situacao_especial TEXT NOT NULL,
+            identificador_matriz_filial TEXT,
+            nome_fantasia TEXT,
+            situacao_cadastral TEXT,
+            data_situacao_cadastral TEXT,
+            motivo_situacao_cadastral TEXT,
+            nome_cidade_exterior TEXT,
+            pais TEXT,
+            data_inicio_atividade TEXT,
+            cnae_fiscal_principal TEXT,
+            cnae_fiscal_secundaria TEXT,
+            tipo_logradouro TEXT,
+            logradouro TEXT,
+            numero TEXT,
+            complemento TEXT,
+            bairro TEXT,
+            cep TEXT,
+            uf TEXT,
+            municipio TEXT,
+            ddd1 TEXT,
+            telefone1 TEXT,
+            ddd2 TEXT,
+            telefone2 TEXT,
+            ddd_fax TEXT,
+            fax TEXT,
+            correio_eletronico TEXT,
+            situacao_especial TEXT,
+            data_situacao_especial TEXT,
             PRIMARY KEY (cnpj_basico, cnpj_ordem, cnpj_dv)
         )
         """,
@@ -192,12 +192,12 @@ RFB_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
         create_sql="""
         CREATE TABLE IF NOT EXISTS public.simples (
             cnpj_basico TEXT PRIMARY KEY,
-            opcao_simples TEXT NOT NULL,
-            data_opcao_simples TEXT NOT NULL,
-            data_exclusao_simples TEXT NOT NULL,
-            opcao_mei TEXT NOT NULL,
-            data_opcao_mei TEXT NOT NULL,
-            data_exclusao_mei TEXT NOT NULL
+            opcao_simples TEXT,
+            data_opcao_simples TEXT,
+            data_exclusao_simples TEXT,
+            opcao_mei TEXT,
+            data_opcao_mei TEXT,
+            data_exclusao_mei TEXT
         )
         """,
     ),
@@ -220,15 +220,15 @@ RFB_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
         CREATE TABLE IF NOT EXISTS public.socios (
             cnpj_basico TEXT NOT NULL,
             identificador_socio TEXT NOT NULL,
-            nome_socio TEXT NOT NULL,
-            cnpj_cpf_socio TEXT NOT NULL,
-            qualificacao_socio TEXT NOT NULL,
-            data_entrada_sociedade TEXT NOT NULL,
-            pais TEXT NOT NULL,
-            representante_legal TEXT NOT NULL,
-            nome_representante TEXT NOT NULL,
-            qualificacao_representante_legal TEXT NOT NULL,
-            faixa_etaria TEXT NOT NULL
+            nome_socio TEXT,
+            cnpj_cpf_socio TEXT,
+            qualificacao_socio TEXT,
+            data_entrada_sociedade TEXT,
+            pais TEXT,
+            representante_legal TEXT,
+            nome_representante TEXT,
+            qualificacao_representante_legal TEXT,
+            faixa_etaria TEXT
         )
         """,
     ),
@@ -243,6 +243,13 @@ AUXILIARY_LOAD_TABLES: tuple[str, ...] = (
     "qualificacoes",
 )
 
+RFB_LOAD_TABLES: tuple[str, ...] = AUXILIARY_LOAD_TABLES + (
+    "estabelecimentos",
+    "empresas",
+    "simples",
+    "socios",
+)
+
 
 class RfbSchemaConflictError(RuntimeError):
     pass
@@ -255,6 +262,7 @@ class RfbSchemaInitializer:
                 with conn.cursor() as cursor:
                     for definition in RFB_TABLE_DEFINITIONS:
                         self._assert_compatible(cursor, definition)
+                        self._normalize_nullable_columns(cursor, definition)
                         cursor.execute(definition.create_sql)
         except Exception:
             conn.rollback()
@@ -279,6 +287,39 @@ class RfbSchemaInitializer:
             raise RfbSchemaConflictError(
                 f"Tabela {definition.name} ja existe com colunas incompatíveis"
             )
+
+    def _normalize_nullable_columns(self, cursor, definition: TableDefinition) -> None:
+        if definition.name not in {"estabelecimentos", "empresas", "simples", "socios"}:
+            return
+        cursor.execute(
+            """
+            SELECT column_name, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s
+            ORDER BY ordinal_position
+            """,
+            (definition.name,),
+        )
+        existing = cursor.fetchall()
+        if not existing:
+            return
+        nullable_columns = [
+            row[0]
+            for row in existing
+            if row[0] not in {
+                "cnpj_basico",
+                "cnpj_ordem",
+                "cnpj_dv",
+                "identificador_socio",
+            }
+            and row[1] == "NO"
+        ]
+        if not nullable_columns:
+            return
+        cursor.execute(
+            f"ALTER TABLE public.{definition.name} "
+            + ", ".join(f"ALTER COLUMN {column} DROP NOT NULL" for column in nullable_columns)
+        )
 
     def validate_installed_tables(self, conn) -> None:
         with conn:

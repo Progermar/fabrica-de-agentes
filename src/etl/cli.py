@@ -57,16 +57,52 @@ def main(argv: list[str] | None = None) -> int:
         )
         loader = RfbLoadService(config=config)
         try:
-            load_result = loader.load_table(
-                args.table,
-                config.source_dir,
-                resume_execucao_id=preflight_result.execucao_id,
-                lease=preflight_result.lease,
-            )
-            print(
-                f"LOAD table={args.table} status={load_result.checkpoint_status} "
-                f"rows={load_result.target_count_after}"
-            )
+            if args.table == "estabelecimentos":
+                load_result = loader.load_estabelecimentos(
+                    config.source_dir,
+                    resume_execucao_id=preflight_result.execucao_id,
+                    lease=preflight_result.lease,
+                )
+                for zip_result in load_result.zip_results:
+                    print(
+                        f"LOAD table={zip_result.table} status={zip_result.checkpoint_status} "
+                        f"rows={zip_result.target_count_after}"
+                    )
+                print(
+                    f"BITSET unique_cnpjs_ativos={load_result.bitset_result.unique_cnpjs_ativos} "
+                    f"bits_marcados={load_result.bitset_result.bits_marcados} "
+                    f"duration_ms={load_result.bitset_result.duration_ms}"
+                )
+                print(f"TOTAL duration_ms={load_result.duration_ms}")
+            elif args.table in {"empresas", "simples", "socios"}:
+                load_result = loader.load_related_table(
+                    args.table,
+                    config.source_dir,
+                    resume_execucao_id=preflight_result.execucao_id,
+                    lease=preflight_result.lease,
+                )
+                print(
+                    f"BITSET unique_cnpjs_ativos={load_result.bitset_result.unique_cnpjs_ativos} "
+                    f"bits_marcados={load_result.bitset_result.bits_marcados} "
+                    f"duration_ms={load_result.bitset_result.duration_ms}"
+                )
+                for zip_result in load_result.zip_results:
+                    print(
+                        f"LOAD table={zip_result.table} status={zip_result.checkpoint_status} "
+                        f"rows={zip_result.target_count_after}"
+                    )
+                print(f"TOTAL duration_ms={load_result.duration_ms}")
+            else:
+                load_result = loader.load_table(
+                    args.table,
+                    config.source_dir,
+                    resume_execucao_id=preflight_result.execucao_id,
+                    lease=preflight_result.lease,
+                )
+                print(
+                    f"LOAD table={args.table} status={load_result.checkpoint_status} "
+                    f"rows={load_result.target_count_after}"
+                )
             return 0
         finally:
             if preflight_result.lease is not None:

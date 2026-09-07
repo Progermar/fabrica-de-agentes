@@ -6,9 +6,10 @@ import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from etl.config import EtlConfig
+from etl.bitset import ActiveCnpjBitsetResult, bitset_contains, build_active_cnpj_bitset
 from etl.control import (
     AdvisoryLockManager,
     ControlRepository,
@@ -17,7 +18,7 @@ from etl.control import (
 )
 from etl.preflight import PreflightLease, PreflightService, PreflightError
 from etl.rfb_schema import RFB_TABLE_DEFINITIONS
-from etl.source import inspect_zip_artifact
+from etl.source import ZipArtifact, discover_zip_inventory, inspect_zip_artifact
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,24 @@ class AuxiliaryLoadSpec:
     table: str
     zip_name: str
     order: int
+
+
+@dataclass(frozen=True)
+class EstablishmentsBatchResult:
+    execucao_id: str
+    table: str
+    zip_results: tuple[LoadResult, ...]
+    bitset_result: ActiveCnpjBitsetResult
+    duration_ms: int
+
+
+@dataclass(frozen=True)
+class RelatedTablesBatchResult:
+    execucao_id: str
+    table: str
+    zip_results: tuple[LoadResult, ...]
+    bitset_result: ActiveCnpjBitsetResult
+    duration_ms: int
 
 
 AUXILIARY_LOAD_SPECS: dict[str, AuxiliaryLoadSpec] = {
@@ -101,15 +120,32 @@ class RfbLoadService:
         resume_execucao_id: str,
         lease: PreflightLease | None = None,
         failure_injector=None,
+        zip_name: str | None = None,
+        cnpj_bitset: bytes | bytearray | None = None,
     ) -> LoadResult:
+        if table == "estabelecimentos" and zip_name is None:
+            batch_result = self.load_estabelecimentos(
+                source_dir,
+                resume_execucao_id=resume_execucao_id,
+                lease=lease,
+                failure_injector=failure_injector,
+            )
+            return batch_result.zip_results[-1]
+
         spec = AUXILIARY_LOAD_SPECS.get(table)
-        if spec is None:
+        if spec is None and table not in {"estabelecimentos", "empresas", "simples", "socios"}:
             raise PreflightError("Neste ticket somente tabelas auxiliares podem ser carregadas")
         definition = self._table_definition(table)
 
         source_path = Path(source_dir)
-        zip_path = source_path / spec.zip_name
+        if zip_name is None:
+            zip_name = spec.zip_name if spec is not None else None
+        if zip_name is None:
+            raise PreflightError("ZIP nao informado para carga")
+        zip_name = cast(str, zip_name)
+        zip_path = source_path / zip_name
         artifact = inspect_zip_artifact(zip_path)
+        order = spec.order if spec is not None else self._zip_order(zip_name)
 
         owns_lease = lease is None
         if lease is None:
@@ -128,7 +164,7 @@ class RfbLoadService:
         if execucao["status"] not in {ExecutionStatus.RUNNING.value, ExecutionStatus.PENDING.value}:
             raise PreflightError("Execucao nao esta pronta para carga")
 
-        existing = self.control_repo.load_checkpoint(control_conn, resume_execucao_id, spec.zip_name)
+        existing = self.control_repo.load_checkpoint(control_conn, resume_execucao_id, zip_name)
         if existing and existing.status == ExecutionStatus.COMMITTED:
             return LoadResult(
                 execucao_id=resume_execucao_id,
@@ -155,7 +191,7 @@ class RfbLoadService:
                 self.control_repo.transition_checkpoint(
                     control_conn,
                     resume_execucao_id,
-                    spec.zip_name,
+                    zip_name,
                     ExecutionStatus.FAILED,
                     "Reconcilacao: commit nao ocorreu",
                 )
@@ -169,7 +205,7 @@ class RfbLoadService:
                 self.control_repo.transition_checkpoint(
                     control_conn,
                     resume_execucao_id,
-                    spec.zip_name,
+                    zip_name,
                     ExecutionStatus.COMMITTED,
                     "Reconcilacao: dados ja commitados",
                 )
@@ -195,7 +231,7 @@ class RfbLoadService:
                 self.control_repo.transition_checkpoint(
                     control_conn,
                     resume_execucao_id,
-                    spec.zip_name,
+                    zip_name,
                     ExecutionStatus.INCONSISTENT,
                     "Reconcilacao inconclusiva",
                 )
@@ -205,16 +241,16 @@ class RfbLoadService:
             self.control_repo.create_checkpoint(
                 control_conn,
                 execucao_id=resume_execucao_id,
-                zip_name=spec.zip_name,
+                zip_name=zip_name,
                 phase=f"load-{table}",
                 member_name=artifact.member_name,
                 table_name=table,
-                order=spec.order,
+                order=order,
             )
         self.control_repo.transition_checkpoint(
             control_conn,
             resume_execucao_id,
-            spec.zip_name,
+            zip_name,
             ExecutionStatus.RUNNING,
             f"Carregando {table}",
         )
@@ -224,6 +260,7 @@ class RfbLoadService:
         start = time.perf_counter()
         source_records = accepted_records = discarded_records = 0
         bytes_removed = 0
+        last_pk_value: str | None = None
         copy_buffer = io.StringIO()
         writer = csv.writer(copy_buffer, delimiter=";", quotechar='"', lineterminator="\n")
         data_committed = False
@@ -244,8 +281,22 @@ class RfbLoadService:
                                         raise ValueError(
                                             f"{table} exige exatamente {len(definition.expected_columns)} colunas"
                                         )
+                                    if table == "estabelecimentos" and row[5] != "02":
+                                        discarded_records += 1
+                                        continue
+                                    if cnpj_bitset is not None and table in {"empresas", "simples", "socios"}:
+                                        if not bitset_contains(cnpj_bitset, row[0]):
+                                            discarded_records += 1
+                                            continue
+                                    if table in {"empresas", "simples"}:
+                                        current_pk = row[0]
+                                        if current_pk == last_pk_value:
+                                            discarded_records += 1
+                                            continue
                                     writer.writerow(row)
                                     accepted_records += 1
+                                    if table in {"empresas", "simples"}:
+                                        last_pk_value = row[0]
                                     if copy_buffer.tell() >= 4 * 1024 * 1024:
                                         self._flush_copy(cursor, copy_buffer, table, definition.expected_columns)
                                 if copy_buffer.tell() > 0:
@@ -257,7 +308,7 @@ class RfbLoadService:
             self.control_repo.update_checkpoint_metrics(
                 control_conn,
                 resume_execucao_id,
-                spec.zip_name,
+                zip_name,
                 source_records=source_records,
                 accepted_records=accepted_records,
                 discarded_records=discarded_records,
@@ -282,7 +333,7 @@ class RfbLoadService:
                 self.control_repo.transition_checkpoint(
                     control_conn,
                     resume_execucao_id,
-                    spec.zip_name,
+                    zip_name,
                     ExecutionStatus.INCONSISTENT,
                     "Contagem pos-commit divergente",
                 )
@@ -290,13 +341,13 @@ class RfbLoadService:
             self.control_repo.update_checkpoint_metrics(
                 control_conn,
                 resume_execucao_id,
-                spec.zip_name,
+                zip_name,
                 target_rowcount_after=target_after,
             )
             self.control_repo.transition_checkpoint(
                 control_conn,
                 resume_execucao_id,
-                spec.zip_name,
+                zip_name,
                 ExecutionStatus.COMMITTED,
                 f"{table} carregado",
             )
@@ -324,7 +375,7 @@ class RfbLoadService:
                 self.control_repo.transition_checkpoint(
                     control_conn,
                     resume_execucao_id,
-                    spec.zip_name,
+                    zip_name,
                     ExecutionStatus.FAILED,
                     str(exc),
                 )
@@ -353,11 +404,138 @@ class RfbLoadService:
         buffer.seek(0)
         buffer.truncate(0)
 
+    def load_related_table(
+        self,
+        table: str,
+        source_dir: Path | str,
+        *,
+        resume_execucao_id: str,
+        lease: PreflightLease | None = None,
+        failure_injector=None,
+    ) -> RelatedTablesBatchResult:
+        source_path = Path(source_dir)
+        inventory = discover_zip_inventory(source_path)
+        artifacts = [item for item in inventory.zip_files if item.kind == table.capitalize()]
+        if not artifacts:
+            raise PreflightError(f"Nenhum ZIP de {table} encontrado")
+        artifacts.sort(key=lambda artifact: self._zip_order(artifact.zip_name))
+
+        owns_lease = lease is None
+        if lease is None:
+            postgres = PreflightService(config=self.config).postgres_factory(self.config)
+            control_conn = postgres.control
+            data_conn = postgres.data
+            lock_key = self.lock_manager.acquire(control_conn, self._competencia(source_path))
+            lease = PreflightLease(control_conn, data_conn, self.lock_manager, lock_key)
+
+        control_conn: Any = lease.control_conn
+        data_conn: Any = lease.data_conn
+        execucao = self.control_repo.load_execution(control_conn, resume_execucao_id)
+        if execucao is None:
+            raise PreflightError(f"Execucao nao encontrada: {resume_execucao_id}")
+        if execucao["status"] not in {ExecutionStatus.RUNNING.value, ExecutionStatus.PENDING.value}:
+            raise PreflightError("Execucao nao esta pronta para carga")
+
+        bitset_result = build_active_cnpj_bitset(data_conn, include_bitset=True)
+        if bitset_result.bitset is None:
+            raise PreflightError("Falha ao reconstruir bitset de CNPJs ativos")
+
+        start = time.perf_counter()
+        zip_results: list[LoadResult] = []
+        try:
+            for artifact in artifacts:
+                result = self.load_table(
+                    table,
+                    source_path,
+                    resume_execucao_id=resume_execucao_id,
+                    lease=lease,
+                    failure_injector=failure_injector,
+                    zip_name=artifact.zip_name,
+                    cnpj_bitset=bitset_result.bitset,
+                )
+                zip_results.append(result)
+
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            return RelatedTablesBatchResult(
+                execucao_id=resume_execucao_id,
+                table=table,
+                zip_results=tuple(zip_results),
+                bitset_result=bitset_result,
+                duration_ms=duration_ms,
+            )
+        finally:
+            if owns_lease and lease is not None:
+                lease.release()
+
+    def load_estabelecimentos(
+        self,
+        source_dir: Path | str,
+        *,
+        resume_execucao_id: str,
+        lease: PreflightLease | None = None,
+        failure_injector=None,
+    ) -> EstablishmentsBatchResult:
+        source_path = Path(source_dir)
+        inventory = discover_zip_inventory(source_path)
+        artifacts = [item for item in inventory.zip_files if item.kind == "Estabelecimentos"]
+        if not artifacts:
+            raise PreflightError("Nenhum ZIP de estabelecimentos encontrado")
+        artifacts.sort(key=lambda artifact: self._zip_order(artifact.zip_name))
+
+        owns_lease = lease is None
+        if lease is None:
+            postgres = PreflightService(config=self.config).postgres_factory(self.config)
+            control_conn = postgres.control
+            data_conn = postgres.data
+            lock_key = self.lock_manager.acquire(control_conn, self._competencia(source_path))
+            lease = PreflightLease(control_conn, data_conn, self.lock_manager, lock_key)
+
+        control_conn: Any = lease.control_conn
+        data_conn: Any = lease.data_conn
+        execucao = self.control_repo.load_execution(control_conn, resume_execucao_id)
+        if execucao is None:
+            raise PreflightError(f"Execucao nao encontrada: {resume_execucao_id}")
+        if execucao["status"] not in {ExecutionStatus.RUNNING.value, ExecutionStatus.PENDING.value}:
+            raise PreflightError("Execucao nao esta pronta para carga")
+
+        start = time.perf_counter()
+        zip_results: list[LoadResult] = []
+        try:
+            for artifact in artifacts:
+                result = self.load_table(
+                    "estabelecimentos",
+                    source_path,
+                    resume_execucao_id=resume_execucao_id,
+                    lease=lease,
+                    failure_injector=failure_injector,
+                    zip_name=artifact.zip_name,
+                )
+                zip_results.append(result)
+
+            bitset_result = build_active_cnpj_bitset(data_conn, include_bitset=True)
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            return EstablishmentsBatchResult(
+                execucao_id=resume_execucao_id,
+                table="estabelecimentos",
+                zip_results=tuple(zip_results),
+                bitset_result=bitset_result,
+                duration_ms=duration_ms,
+            )
+        finally:
+            if owns_lease and lease is not None:
+                lease.release()
+
     def _table_definition(self, table: str):
         for definition in RFB_TABLE_DEFINITIONS:
             if definition.name == table:
                 return definition
         raise PreflightError(f"Tabela desconhecida: {table}")
+
+    def _zip_order(self, zip_name: str) -> int:
+        digits = "".join(ch for ch in zip_name if ch.isdigit())
+        if digits:
+            return int(digits) + 1
+        return 1
 
     def _count_rows(self, conn, table: str) -> int:
         with conn.cursor() as cursor:

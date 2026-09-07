@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from etl.rfb_schema import AUXILIARY_LOAD_TABLES
+from etl.rfb_schema import RFB_LOAD_TABLES
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_db_args(load)
     load.add_argument("--competencia", required=True)
     load.add_argument("--source-dir", required=True)
-    load.add_argument("--table", required=True, choices=list(AUXILIARY_LOAD_TABLES))
+    load.add_argument("--table", required=True, choices=list(RFB_LOAD_TABLES))
     load.add_argument("--resume-execucao-id")
 
     return parser
