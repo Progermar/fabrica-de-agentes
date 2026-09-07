@@ -9,7 +9,7 @@
 - **Porta:** 5433 (host) / 5432 (container)
 - **Usuário:** dexaprospect_app
 
-## Status
+## Status Final
 
 | Métrica | Antes | Depois |
 |---------|-------|--------|
@@ -17,6 +17,7 @@
 | Disco livre | 909 GB | 905 GB |
 | Índices criados | 0 (novos) | 10 |
 | ANALYZE | Nunca executado | Concluído |
+| Backup final | — | rfb_2026-08_FINAL.dump (3.5 GB) |
 
 ## Índices Criados
 
@@ -43,6 +44,8 @@
 | Índice | Coluna | Tipo | Tamanho |
 |--------|--------|------|---------|
 | idx_municipios_nome_trgm | descricao | GIN (pg_trgm) | 336 kB |
+
+**Nota:** O nome do índice contém `nome` por convenção, mas a coluna real na tabela RFB é `descricao` (schema: `municipios.codigo`, `municipios.descricao`).
 
 ### SOCIOS
 
@@ -83,6 +86,43 @@
 | socios WHERE cnpj_basico = '42473600' | idx_socios_cnpj_basico | ✅ Index Scan |
 | empresas WHERE razao_social ILIKE '%X%' | — | ⚠️ Seq Scan (leading wildcard) |
 | municipios WHERE descricao % 'SAO PAULO' | idx_municipios_nome_trgm | ✅ Bitmap Index Scan |
+
+## Validação Final (2026-09-07)
+
+### Contagens
+
+| Tabela | Contagem Esperada | Contagem Real | Status |
+|--------|-------------------|---------------|--------|
+| cnaes | 1.359 | 1.359 | ✅ |
+| motivos | 63 | 63 | ✅ |
+| municipios | 5.572 | 5.572 | ✅ |
+| naturezas_juridicas | 91 | 91 | ✅ |
+| paises | 255 | 255 | ✅ |
+| qualificacoes | 68 | 68 | ✅ |
+| empresas | 26.828.522 | 26.828.522 | ✅ |
+| estabelecimentos | 28.148.920 | 28.148.920 | ✅ |
+| simples | 23.151.707 | 23.151.707 | ✅ |
+| socios | 14.458.308 | 14.458.308 | ✅ |
+
+### Integridade
+
+| Verificação | Resultado |
+|-------------|-----------|
+| estabelecimentos WHERE situacao_cadastral != '02' | 0 (todos ativos) |
+| PK duplicates em estabelecimentos | 0 |
+| DISTINCT cnpj_basico em estabelecimentos | 26.828.522 |
+| estabelecimentos sem empresa | 0 |
+| simples sem estabelecimento | 0 |
+| socios sem estabelecimento | 0 |
+
+### Backup Final
+
+| Campo | Valor |
+|-------|-------|
+| Arquivo | rfb_2026-08_FINAL.dump |
+| Tamanho | 3.500.993.484 bytes (3.5 GB) |
+| SHA256 | 8AD70616E508159D9C10D965FF450A7619B502662D3BAB50DAD4C8D6BD5293B1 |
+| Data/Hora | 2026-09-07 09:22:59 |
 
 ## Notas
 
