@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "account-intelligence": "./src/fabrica_de_agentes/graph.py:account_intelligence_graph",
+    "account-intelligence-live": "./src/fabrica_de_agentes/graph.py:build_live_graph"
+  },
+  "env": ".env"
+}

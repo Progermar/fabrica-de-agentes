@@ -117,3 +117,21 @@ def build_graph(
 
 # Instancia compilada do grafo com mock (padrao para testes offline)
 account_intelligence_graph = build_graph()
+
+
+def build_live_graph():
+    """Constroi e compila o grafo de Account Intelligence em modo live.
+
+    Compoe os provedores reais:
+    - SearchProvider: ExaSearchProvider
+    - LLMProvider: OpenCodeProvider
+    - require_llm: True
+    """
+    from fabrica_de_agentes.llm.opencode_provider import OpenCodeProvider
+    from fabrica_de_agentes.search.exa_provider import ExaSearchProvider
+
+    return build_graph(
+        provider=ExaSearchProvider(),
+        llm=OpenCodeProvider(),
+        require_llm=True,
+    )

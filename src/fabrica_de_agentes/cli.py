@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
+
 from fabrica_de_agentes.config import get_config
-from fabrica_de_agentes.graph import build_graph
+from fabrica_de_agentes.graph import build_graph, build_live_graph
 from fabrica_de_agentes.state import AccountIntelligenceState
+
+load_dotenv()
 
 
 def _get_provider(name: str):
@@ -38,31 +42,37 @@ def run_agent(
     max_loops: int | None = None,
     provider_name: str | None = None,
     llm_name: str | None = None,
-) -> str:
-    """Executa o agente para uma empresa-alvo e retorna o briefing."""
+    live: bool = False,
+    return_state: bool = False,
+) -> str | dict:
+    """Executa o agente para uma empresa-alvo e retorna o briefing (ou estado completo)."""
     config = get_config()
     loops = max_loops if max_loops is not None else config.max_research_loops
 
-    search_name = provider_name or config.search_provider
-    provider = _get_provider(search_name)
+    if live:
+        graph = build_live_graph()
+    else:
+        search_name = provider_name or config.search_provider
+        provider = _get_provider(search_name)
 
-    llm = None
-    if llm_name == "none":
         llm = None
-    elif llm_name == "opencode":
-        llm = _get_llm("opencode")
-    elif llm_name:
-        llm = _get_llm(llm_name)
-    elif search_name == "exa":
-        try:
+        if llm_name == "none":
+            llm = None
+        elif llm_name == "opencode":
             llm = _get_llm("opencode")
-        except (ValueError, RuntimeError) as e:
-            raise RuntimeError(
-                f"provider=exa requer LLM configurado. "
-                f"Nenhum --llm informado e OpenCode nao esta disponivel: {e}"
-            ) from e
+        elif llm_name:
+            llm = _get_llm(llm_name)
+        elif search_name == "exa":
+            try:
+                llm = _get_llm("opencode")
+            except (ValueError, RuntimeError) as e:
+                raise RuntimeError(
+                    f"provider=exa requer LLM configurado. "
+                    f"Nenhum --llm informado e OpenCode nao esta disponivel: {e}"
+                ) from e
 
-    graph = build_graph(provider=provider, llm=llm)
+        require_llm = bool(search_name == "exa" and llm_name != "none")
+        graph = build_graph(provider=provider, llm=llm, require_llm=require_llm)
 
     initial_state = AccountIntelligenceState(
         target_company=target_company,
@@ -72,6 +82,8 @@ def run_agent(
     )
 
     result = graph.invoke(initial_state)
+    if return_state:
+        return result
     return result["briefing_final"]
 
 
@@ -107,14 +119,27 @@ def main():
         default=None,
         help="Provedor de LLM (padrao: opencode; 'none' somente para diagnostico)",
     )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Executa em modo live (ExaSearchProvider + OpenCodeProvider + require_llm=True)",
+    )
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
     print("  Account Intelligence Agent")
     print(f"  Empresa-alvo: {args.company}")
+    if args.live:
+        print("  Modo: LIVE (ExaSearchProvider + OpenCodeProvider)")
     print(f"{'='*60}\n")
 
-    briefing = run_agent(args.company, args.max_loops, args.provider, args.llm)
+    briefing = run_agent(
+        args.company,
+        args.max_loops,
+        args.provider,
+        args.llm,
+        live=args.live,
+    )
     print(briefing)
 
 

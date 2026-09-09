@@ -212,3 +212,30 @@ def test_briefing_shows_llm_metrics():
     assert "Fatos confirmados" in briefing
     assert "Inferencias" in briefing
     assert "Hipoteses" in briefing
+
+
+def test_build_live_graph_composition():
+    """Verifica que build_live_graph compoe ExaSearchProvider
+    e OpenCodeProvider com require_llm=True.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from fabrica_de_agentes.graph import build_live_graph
+    from fabrica_de_agentes.llm.base import LLMProvider
+    from fabrica_de_agentes.search.base import SearchProvider
+
+    mock_search = MagicMock(spec=SearchProvider)
+    mock_llm = MagicMock(spec=LLMProvider)
+
+    with patch(
+        "fabrica_de_agentes.search.exa_provider.ExaSearchProvider",
+        return_value=mock_search,
+    ) as mock_exa_cls:
+        with patch(
+            "fabrica_de_agentes.llm.opencode_provider.OpenCodeProvider",
+            return_value=mock_llm,
+        ) as mock_llm_cls:
+            graph = build_live_graph()
+            assert graph is not None
+            mock_exa_cls.assert_called_once()
+            mock_llm_cls.assert_called_once()
